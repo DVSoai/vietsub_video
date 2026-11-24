@@ -168,6 +168,7 @@ class Transcriber:
     stop: threading.Event | None = None
     log: callable = print
     progress: callable = lambda done, total: None
+    event: callable = lambda e: None
     max_retries: int = 4
 
     def __post_init__(self):
@@ -185,6 +186,9 @@ class Transcriber:
             self._rr += 1
             return p
 
+    def _job(self, idx: int, state: str, **kw):
+        self.event({"type": "job", "id": f"nghe-{idx}", "state": state, **kw})
+
     def _one(self, idx: int, audio: bytes, length: float) -> list[tuple[float, float, str]]:
         prompt = build_prompt(self.lang, self.hints)
         last = ""
@@ -192,20 +196,27 @@ class Transcriber:
             if self.stop.is_set():
                 return []
             prov = self._provider()
+            self._job(idx, "run", src=getattr(prov, "label", ""),
+                      info=f"Gemini đang nghe {length:.0f}s âm thanh" + (f" (lần {attempt})" if attempt > 1 else ""))
             try:
                 reply = prov.generate(
                     [{"inlineData": {"mimeType": "audio/mp3", "data": base64.b64encode(audio).decode()}},
                      {"text": prompt}],
                     json_mode=True)
-                return parse_segments(reply, length)
-            except ProviderError:
+                segs = parse_segments(reply, length)
+                self._job(idx, "done", info=f"nghe được {len(segs)} câu")
+                return segs
+            except ProviderError as e:
+                self._job(idx, "fail", info=str(e)[:120])
                 raise
             except (RetryableError, ValueError) as e:
                 last = str(e)
                 wait = getattr(e, "wait", None) or min(30, 2 ** attempt)
+                self._job(idx, "retry", info=f"{last[:80]} — chờ {wait:.0f}s ({attempt}/{self.max_retries})")
                 self.log(f"  ⚠ Đoạn {idx + 1}: {last[:120]} → thử lại sau {wait:.0f}s ({attempt}/{self.max_retries})")
                 if self.stop.wait(wait):
                     return []
+        self._job(idx, "fail", info=f"bỏ qua sau {self.max_retries} lần")
         self.log(f"  ✖ Đoạn {idx + 1}: bỏ qua sau {self.max_retries} lần ({last[:100]})")
         return []
 
@@ -214,11 +225,18 @@ class Transcriber:
         try:
             wav = os.path.join(tmp, "audio.wav")
             self.log("  Đang tách tiếng từ video…")
+            self.event({"type": "stage", "stage": "audio", "text": "Đang tách tiếng từ video bằng ffmpeg"})
             dur = extract_audio(media, wav)
+            self.event({"type": "stage", "stage": "audio", "text": "Đang tìm chỗ im lặng để cắt đoạn"})
             chunks = plan_chunks(dur, silences(wav))
             self.log(f"  Âm thanh dài {int(dur // 60)}:{int(dur % 60):02d} → {len(chunks)} đoạn, "
                      f"{min(self.threads, len(chunks))} luồng nghe")
             data = [cut_chunk(wav, s, e, os.path.join(tmp, f"c{i}.mp3")) for i, (s, e) in enumerate(chunks)]
+            for i, (s, e) in enumerate(chunks):
+                self._job(i, "queued", name=f"Nghe đoạn {i + 1}/{len(chunks)} · {_mmss(s)}–{_mmss(e)}",
+                          info="đang chờ luồng trống")
+            self.event({"type": "stage", "stage": "listen",
+                        "text": f"Đang nghe giọng: {len(chunks)} đoạn, {_mmss(dur)} âm thanh"})
             results: dict[int, list] = {}
             done = 0
             self.progress(0, len(chunks))
@@ -235,6 +253,10 @@ class Transcriber:
             return cues
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _mmss(sec: float) -> str:
+    return f"{int(sec // 60)}:{int(sec % 60):02d}"
 
 
 def _ts(sec: float) -> str:

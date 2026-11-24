@@ -93,6 +93,11 @@ def needs_retranslation(src: str, dst: str | None, source_lang: str) -> bool:
 class Callbacks:
     log: Callable[[str], None] = print
     progress: Callable[[int, int], None] = lambda done, total: None  # batch đã xong / tổng
+    # sự kiện chi tiết cho giao diện:
+    #  {"type": "stage", "stage": "translate"|"fix"|..., "text": "..."}
+    #  {"type": "job", "id": "...", "name": "...", "state": "queued|run|retry|done|fail",
+    #   "src": "nguồn đang gửi", "info": "..."}
+    event: Callable[[dict], None] = lambda e: None
 
 
 @dataclass
@@ -134,52 +139,80 @@ class Translator:
             return bool(self._alive())
 
     # ---- một batch ----
-    def _translate_batch(self, items: dict[str, str]) -> dict[str, str]:
+    def _job(self, jid: str, state: str, **kw):
+        self.cb.event({"type": "job", "id": jid, "state": state, **kw})
+
+    def _translate_batch(self, items: dict[str, str], jid: str = "") -> dict[str, str]:
         user = json.dumps(items, ensure_ascii=False)
         last_err = None
         for attempt in range(1, self.settings.max_retries + 1):
             if self.stop.is_set():
                 raise Stopped()
+            if self.limiter.interval:
+                self._job(jid, "queued", info="chờ lượt theo giới hạn request/phút")
             self.limiter.wait(self.stop)
             prov = self._next_provider()
+            self._job(jid, "run", src=getattr(prov, "label", ""),
+                      info=f"đang gửi {len(items)} câu" + (f" (lần {attempt})" if attempt > 1 else ""))
             try:
                 reply = prov.chat(self.system, user)
                 result = parse_json_reply(reply)
                 got = {k: result[k] for k in items if k in result}
                 if len(got) >= max(1, int(len(items) * 0.5)):
+                    self._job(jid, "done", info=f"nhận {len(got)}/{len(items)} câu")
                     return got  # thiếu vài câu thì để vòng dịch bù xử lý
                 last_err = f"chỉ nhận {len(got)}/{len(items)} câu"
             except ProviderError as e:
                 if self._drop(prov, e):
+                    self._job(jid, "retry", info="nguồn lỗi, chuyển sang nguồn khác")
                     continue  # thử lại batch này bằng nguồn khác
+                self._job(jid, "fail", info=str(e)[:120])
                 raise
             except RetryableError as e:
                 last_err = str(e)
                 wait = e.wait or min(60, 2 ** attempt + random.random())
+                self._job(jid, "retry", info=f"{last_err[:80]} — chờ {wait:.0f}s ({attempt}/{self.settings.max_retries})")
                 self.cb.log(f"  ⚠ {last_err[:150]} → chờ {wait:.0f}s thử lại ({attempt}/{self.settings.max_retries})")
                 if self.stop.wait(wait):
                     raise Stopped()
                 continue
             except (ValueError, json.JSONDecodeError) as e:
                 last_err = f"JSON lỗi: {e}"
+            self._job(jid, "retry", info=f"{last_err[:80]} ({attempt}/{self.settings.max_retries})")
             self.cb.log(f"  ⚠ {last_err} → thử lại ({attempt}/{self.settings.max_retries})")
             if self.stop.wait(min(20, attempt * 2)):
                 raise Stopped()
+        self._job(jid, "fail", info=f"bỏ qua sau {self.settings.max_retries} lần: {last_err}"[:120])
         self.cb.log(f"  ✖ Bỏ qua batch sau {self.settings.max_retries} lần: {last_err}")
         return {}
 
     # ---- chạy nhiều batch song song ----
-    def _run(self, items: dict[str, str], batch_size: int, done_offset=0, total=None) -> dict[str, str]:
+    def _run(self, items: dict[str, str], batch_size: int, done_offset=0, total=None,
+             phase: str = "Batch") -> dict[str, str]:
         keys = list(items)
         batches = [
             {k: items[k] for k in keys[i : i + batch_size]} for i in range(0, len(keys), batch_size)
         ]
+        jids = []
+        for i, b in enumerate(batches, 1):
+            ks = list(b)
+            nums = [int(k) for k in ks if k.isdigit()]
+            if len(ks) == 1:
+                rng = f"câu {ks[0]}"
+            elif nums and nums == list(range(nums[0], nums[0] + len(nums))):
+                rng = f"câu {ks[0]}–{ks[-1]}"
+            else:  # câu lẻ (dịch bù): liệt kê
+                rng = f"{len(ks)} câu: " + ", ".join(ks[:4]) + ("…" if len(ks) > 4 else "")
+            jid = f"{phase}-{i}-{id(b)}"
+            jids.append(jid)
+            disp = "Batch" if phase == "Dịch" else "Batch bù"
+            self._job(jid, "queued", name=f"{disp} {i}/{len(batches)} · {rng}", info="đang chờ luồng trống")
         total = total or len(batches)
         out: dict[str, str] = {}
         done = done_offset
         self.cb.progress(done, total)
         with ThreadPoolExecutor(max_workers=max(1, self.settings.threads)) as ex:
-            futs = [ex.submit(self._translate_batch, b) for b in batches]
+            futs = [ex.submit(self._translate_batch, b, jids[i]) for i, b in enumerate(batches)]
             try:
                 for f in as_completed(futs):
                     out.update(f.result())
@@ -203,7 +236,9 @@ class Translator:
         bs = max(1, self.settings.batch_size)
         n_batches = -(-len(items) // bs)
         self.cb.log(f"Dịch {len(items)} câu trong {n_batches} batch, {self.settings.threads} luồng")
-        got = self._run(items, bs)
+        self.cb.event({"type": "stage", "stage": "translate",
+                       "text": f"Đang dịch {len(items)} câu ({n_batches} batch)"})
+        got = self._run(items, bs, phase="Dịch")
         result.update({int(k): v for k, v in got.items()})
 
         # Vòng dịch bù: câu thiếu / còn chữ gốc, batch nhỏ hơn
@@ -214,6 +249,8 @@ class Translator:
             if not miss or self.stop.is_set():
                 break
             self.cb.log(f"Dịch bù vòng {rnd}: {len(miss)} câu sót (batch {small})")
-            got = self._run(miss, small)
+            self.cb.event({"type": "stage", "stage": "fix",
+                           "text": f"Dịch bù vòng {rnd}: {len(miss)} câu bị sót hoặc còn chữ gốc"})
+            got = self._run(miss, small, phase=f"Bù {rnd}")
             result.update({int(k): v for k, v in got.items() if v.strip()})
         return result

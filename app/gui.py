@@ -11,10 +11,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QSpinBox, QVBoxLayout, QWidget,
+    QAbstractItemView, QHeaderView, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import srt, theme
@@ -30,6 +31,10 @@ LANG_CODE = {"Tiếng Việt": "vi", "Tiếng Anh": "en", "Tiếng Trung": "zh",
              "Tiếng Hàn": "ko", "Tiếng Thái": "th", "Tiếng Indonesia": "id", "Tiếng Pháp": "fr",
              "Tiếng Tây Ban Nha": "es", "Tiếng Nga": "ru"}
 NO_PROMPT = "(Không dùng prompt riêng)"
+STEPS = [("audio", "Tách tiếng"), ("listen", "Nghe giọng"), ("translate", "Dịch"),
+         ("fix", "Dịch bù"), ("save", "Lưu file")]
+JOB_STATE = {"queued": ("⏳ Chờ", "#8a94a7"), "run": ("▶ Đang chạy", "#2fd9ab"),
+             "retry": ("↻ Thử lại", "#f2b84b"), "done": ("✔ Xong", "#21c49a"), "fail": ("✖ Lỗi", "#ef5d6c")}
 
 
 def app_dir() -> Path:
@@ -57,6 +62,7 @@ def output_path_for(inp: str, out_dir: str, target_lang: str) -> str:
 # ---------------------------------------------------------------- worker
 class Worker(QThread):
     log = Signal(str)
+    event = Signal(dict)
     progress = Signal(int, int)
     file_progress = Signal(int, int)
     done = Signal(str)
@@ -81,7 +87,7 @@ class Worker(QThread):
             return []
         tc = Transcriber(self.providers, self.settings.source_lang, self.settings.custom_prompt,
                          threads=min(self.settings.threads, 8), stop=self.stop_event,
-                         log=self.log.emit, progress=self.progress.emit)
+                         log=self.log.emit, progress=self.progress.emit, event=self.event.emit)
         cues = tc.run(path)
         if self.stop_event.is_set():
             raise Stopped()
@@ -99,12 +105,14 @@ class Worker(QThread):
         tr = Translator(self.providers, self.settings, self.stop_event)
         tr.cb.log = self.log.emit
         tr.cb.progress = self.progress.emit
+        tr.cb.event = self.event.emit
         ok = 0
         try:
             for fi, path in enumerate(self.files, 1):
                 if self.stop_event.is_set():
                     break
                 self.file_progress.emit(fi, len(self.files))
+                self.event.emit({"type": "file", "name": Path(path).name, "i": fi, "n": len(self.files)})
                 self.log.emit(f"━━ [{fi}/{len(self.files)}] {Path(path).name}")
                 cues = self._source_cues(path)
                 if not cues:
@@ -123,6 +131,7 @@ class Worker(QThread):
                     old = {i + 1: c.text for i, c in enumerate(srt.parse(srt.read_text(out)))}
                     if len(old) != len(cues):
                         self.log.emit(f"  ⚠ Số câu khác nhau (gốc {len(cues)}, đã dịch {len(old)}) — so theo thứ tự")
+                    self.event.emit({"type": "stage", "stage": "fix", "text": "Đang so file gốc với file đã dịch"})
                     miss = [c.index for c in cues
                             if needs_retranslation(c.text, old.get(c.index), self.settings.source_lang)]
                     self.log.emit(f"  Tìm thấy {len(miss)} câu dịch sót")
@@ -134,6 +143,7 @@ class Worker(QThread):
                         if needs_retranslation(c.text, res.get(c.index), self.settings.source_lang)]
                 new_cues = [srt.Cue(c.index, c.start, c.end, res.get(c.index) or c.text, c.extra)
                             for c in cues]
+                self.event.emit({"type": "stage", "stage": "save", "text": f"Đang lưu {Path(out).name}"})
                 Path(out).parent.mkdir(parents=True, exist_ok=True)
                 with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
                     f.write(srt.compose(new_cues))
@@ -280,8 +290,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Subtitle Translator")
         self.setWindowIcon(theme.app_icon())
-        self.resize(1180, 820)
-        self.setMinimumSize(1000, 800)
+        self.resize(1180, 860)
+        self.setMinimumSize(1000, 840)
         PROMPTS.mkdir(parents=True, exist_ok=True)
         self.cfg = self._load_cfg()
         self.worker: Worker | None = None
@@ -395,7 +405,7 @@ class MainWindow(QMainWindow):
         v4.itemAt(0).layout().addWidget(self.btn_clear)
         self.log_box = QPlainTextEdit(); self.log_box.setObjectName("log")
         self.log_box.setReadOnly(True); self.log_box.setMaximumBlockCount(5000)
-        self.log_box.setMinimumHeight(96)
+        self.log_box.setMinimumHeight(60)
         self.log_box.setPlaceholderText("Nhật ký sẽ hiện ở đây…")
         v4.addWidget(self.log_box, 1)
 
@@ -412,31 +422,85 @@ class MainWindow(QMainWindow):
         self.bar = QProgressBar(); self.bar.setValue(0); self.bar.setFixedHeight(12)
         self.lb_pct = QLabel("0%"); self.lb_pct.setObjectName("cardTitle"); self.lb_pct.setMinimumWidth(48)
         self.lb_pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        brow = QHBoxLayout(); brow.addWidget(self.bar, 1); brow.addWidget(self.lb_pct)
-        self.lb_file = QLabel("File  0/0"); self.lb_batch = QLabel("Batch  0/0")
-        self.lb_time = QLabel("⏱  0s")
+        self.lb_file = QLabel("File 0/0"); self.lb_batch = QLabel("Batch 0/0")
+        self.lb_time = QLabel("⏱ 0s")
+        brow = QHBoxLayout(); brow.setSpacing(8)
+        brow.addWidget(self.bar, 1)
         for w in (self.lb_file, self.lb_batch, self.lb_time):
-            w.setObjectName("chip")
+            w.setObjectName("chip"); brow.addWidget(w)
+        brow.addWidget(self.lb_pct)
         self.btn_run = btn("▶   Bắt đầu dịch", "primary")
         self.btn_stop = btn("■  Dừng", "danger")
         self.btn_fix = btn("Check dịch sót", "ghost", "Tìm câu trống / còn chữ gốc trong file đã dịch và dịch lại")
         self.btn_fmt = btn("Check format", "ghost", "Kiểm tra số thứ tự, timecode, dòng trống")
         self.btn_stop.setEnabled(False)
+        # dòng trạng thái (luôn hiện) + nút phóng to / thu nhỏ
+        self.lb_stage = QLabel("Chưa chạy. Chọn file rồi bấm “Bắt đầu dịch”.")
+        self.lb_stage.setObjectName("stage")
+        self.lb_stage.setFixedHeight(40)
+        self.lb_stage.setMinimumWidth(200)
+        self.lb_stage.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.btn_detail = btn("⤢  Phóng to", "link", "Phóng to: xem chi tiết từng việc đang chạy · Thu nhỏ: quay về màn hình cài đặt")
+
+        srow2 = QHBoxLayout(); srow2.setSpacing(8)
+        srow2.addWidget(self.lb_stage, 1); srow2.addWidget(self.btn_detail)
         crow = QHBoxLayout(); crow.setSpacing(8)
-        for w in (self.lb_file, self.lb_batch, self.lb_time):
-            crow.addWidget(w)
         crow.addStretch(1)
         crow.addWidget(self.btn_fix); crow.addWidget(self.btn_fmt)
         crow.addSpacing(10)
         crow.addWidget(self.btn_stop); crow.addWidget(self.btn_run)
-        av.addLayout(brow); av.addLayout(crow)
+
+        # bảng chi tiết (ẩn khi thu nhỏ)
+        self.detail = QWidget()
+        dv = QVBoxLayout(self.detail); dv.setContentsMargins(0, 0, 0, 0); dv.setSpacing(8)
+        steps = QHBoxLayout(); steps.setSpacing(6)
+        self.step_lbls = {}
+        for i, (key, name) in enumerate(STEPS):
+            if i:
+                arrow = QLabel("›"); arrow.setObjectName("muted"); steps.addWidget(arrow)
+            lab = QLabel(name); lab.setObjectName("stepChip"); lab.setProperty("state", "")
+            self.step_lbls[key] = lab
+            steps.addWidget(lab)
+        steps.addStretch(1)
+        self.jobs = QTableWidget(0, 5)
+        self.jobs.setObjectName("jobs")
+        self.jobs.setHorizontalHeaderLabels(["Việc", "Trạng thái", "Nguồn", "Thời gian", "Ghi chú"])
+        self.jobs.verticalHeader().setVisible(False)
+        self.jobs.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.jobs.setSelectionMode(QAbstractItemView.NoSelection)
+        self.jobs.setFocusPolicy(Qt.NoFocus)
+        self.jobs.setShowGrid(False)
+        self.jobs.setWordWrap(False)
+        hh = self.jobs.horizontalHeader()
+        for c, mode in enumerate((QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
+                                  QHeaderView.Interactive, QHeaderView.ResizeToContents, QHeaderView.Stretch)):
+            hh.setSectionResizeMode(c, mode)
+        self.jobs.setColumnWidth(2, 210)
+        self.jobs.verticalHeader().setDefaultSectionSize(26)
+        self.jobs.setMinimumHeight(150)
+        hint = QLabel("Bấm “Thu nhỏ” để quay lại cài đặt và nhật ký. Mỗi dòng là một việc gửi lên AI.")
+        hint.setObjectName("hint")
+        dv.addLayout(steps); dv.addWidget(self.jobs, 1); dv.addWidget(hint)
+        self.detail.setVisible(False)
+
+        av.addLayout(brow); av.addLayout(srow2); av.addWidget(self.detail, 1); av.addLayout(crow)
+        self._job_rows: dict[str, int] = {}
+        self._job_start: dict[str, float] = {}
+        self._job_state: dict[str, str] = {}
+        self._job_stage: dict[str, str] = {}
+        self._cur_stage = ""
+        self._stage_text = ""
 
 
         root = QWidget(); root.setObjectName("root")
         v = QVBoxLayout(root); v.setContentsMargins(22, 18, 22, 18); v.setSpacing(14)
+        self.settings_area = QWidget()
+        self.settings_area.setLayout(cols)
+        cols.setContentsMargins(0, 0, 0, 0)
         v.addLayout(header)
-        v.addLayout(cols, 1)
+        v.addWidget(self.settings_area, 1)
         v.addWidget(act)
+        self._root_v, self._act = v, act
         self.setCentralWidget(root)
 
         self.timer = QTimer(self)
@@ -458,6 +522,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self._stop)
         self.btn_fmt.clicked.connect(self._check_format)
         self.btn_clear.clicked.connect(self.log_box.clear)
+        self.btn_detail.clicked.connect(lambda: self._set_detail(not self.detail.isVisible()))
         self.chk_use.toggled.connect(self._on_use_toggled)
         self.btn_json.clicked.connect(self._pick_json)
         self.ed_keys.textChanged.connect(self._refresh_using)
@@ -492,6 +557,7 @@ class MainWindow(QMainWindow):
         self.sp_batch.setValue(c.get("batch", 40))
         self.cb_target.setCurrentText(c.get("target", "Tiếng Việt"))
         self.cb_source.setCurrentText(c.get("source", "Tiếng Trung"))
+        self._set_detail(bool(c.get("detail", False)), resize=False)
 
     def _save_provider_state(self, name: str):
         pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
@@ -509,7 +575,7 @@ class MainWindow(QMainWindow):
             provider=self.cb_provider.currentText(), output=self.ed_output.text(),
             threads=self.sp_threads.value(), rpm=self.sp_rpm.value(), batch=self.sp_batch.value(),
             target=self.cb_target.currentText(), source=self.cb_source.currentText(),
-            prompt=self.cb_prompt.currentText(),
+            prompt=self.cb_prompt.currentText(), detail=self.detail.isVisible(),
         )
         DATA.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -752,8 +818,11 @@ class MainWindow(QMainWindow):
                              only_transcribe=self.chk_only_tc.isChecked())
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)
-        self.worker.file_progress.connect(lambda i, n: self.lb_file.setText(f"File  {i}/{n}"))
+        self.worker.event.connect(self._on_event)
+        self.worker.file_progress.connect(lambda i, n: self.lb_file.setText(f"File {i}/{n}"))
         self.worker.done.connect(self._on_done)
+        self._reset_detail()
+        self._set_stage_text("Đang chuẩn bị…")
         self._set_running(True)
         self._set_pct(0)
         self.t0 = time.monotonic()
@@ -765,8 +834,116 @@ class MainWindow(QMainWindow):
             self.worker.stop()
             self._log("Đang dừng… (chờ các request đang chạy kết thúc)")
 
+    # ---------- tiến độ chi tiết
+    def _set_detail(self, on: bool, resize: bool = True):
+        """Phóng to: ẩn cài đặt, thẻ tiến độ chiếm cả cửa sổ. Thu nhỏ: quay lại bình thường."""
+        self.detail.setVisible(on)
+        self.settings_area.setVisible(not on)
+        self._root_v.setStretchFactor(self._act, 1 if on else 0)
+        self.btn_detail.setText("⤡  Thu nhỏ" if on else "⤢  Phóng to")
+
+    def _reset_detail(self):
+        self.jobs.setRowCount(0)
+        self._job_rows.clear(); self._job_start.clear(); self._job_state.clear()
+        self._job_stage.clear(); self._cur_stage = ""
+        for lab in self.step_lbls.values():
+            lab.setProperty("state", ""); repolish(lab)
+
+    def _set_stage_text(self, text: str):
+        self._stage_text = text
+        self._refresh_stage()
+
+    def _on_event(self, e: dict):
+        t = e.get("type")
+        if t == "file":
+            self._reset_detail()
+            self._set_stage_text(f"Bắt đầu file {e['i']}/{e['n']}: {e['name']}")
+        elif t == "stage":
+            keys = [k for k, _ in STEPS]
+            cur = keys.index(e["stage"]) if e["stage"] in keys else -1
+            for i, k in enumerate(keys):
+                lab = self.step_lbls[k]
+                old = lab.property("state")
+                new = "now" if i == cur else ("done" if i < cur and old in ("now", "done") else
+                                              ("skip" if i < cur else ""))
+                if i < cur and old == "":
+                    new = "skip"
+                lab.setProperty("state", new); repolish(lab)
+            self._cur_stage = e["stage"]
+            self._set_stage_text(e.get("text", ""))
+        elif t == "job":
+            self._update_job(e)
+
+    def _update_job(self, e: dict):
+        jid = e["id"]
+        row = self._job_rows.get(jid)
+        if row is None:
+            row = self.jobs.rowCount()
+            self.jobs.insertRow(row)
+            self._job_rows[jid] = row
+            self._job_stage[jid] = "listen" if jid.startswith("nghe-") else (
+                "fix" if jid.startswith("Bù") else "translate")
+            for c in range(5):
+                self.jobs.setItem(row, c, QTableWidgetItem(""))
+        if e.get("name"):
+            self.jobs.item(row, 0).setText(e["name"])
+        st = e.get("state")
+        if st:
+            prev = self._job_state.get(jid)
+            self._job_state[jid] = st
+            label, color = JOB_STATE.get(st, (st, "#8a94a7"))
+            it = self.jobs.item(row, 1)
+            it.setText(label); it.setForeground(QColor(color))
+            if st == "run" and prev != "run":
+                self._job_start[jid] = time.monotonic()
+            if st in ("done", "fail") and jid in self._job_start:
+                self.jobs.item(row, 3).setText(f"{time.monotonic() - self._job_start[jid]:.0f}s")
+        if e.get("src"):
+            self.jobs.item(row, 2).setText(e["src"])
+        if "info" in e:
+            self.jobs.item(row, 4).setText(e["info"])
+        if st in ("run", "retry", "fail"):
+            self.jobs.scrollToItem(self.jobs.item(row, 0))
+        self._refresh_stage()
+
+    def _refresh_stage(self):
+        """Dòng trạng thái: giai đoạn + việc đang chạy lâu nhất."""
+        now = time.monotonic()
+        running = [j for j, s in self._job_state.items() if s in ("run", "retry")]
+        for j in running:  # cập nhật cột thời gian cho việc đang chạy
+            if j in self._job_start:
+                self.jobs.item(self._job_rows[j], 3).setText(f"{now - self._job_start[j]:.0f}s")
+        cur = {j: s for j, s in self._job_state.items() if self._job_stage.get(j) == self._cur_stage}
+        cnt = {k: sum(1 for s in cur.values() if s == k) for k in JOB_STATE}
+        text = self._stage_text
+        running_now = self.btn_stop.isEnabled()
+        if cur and running_now:
+            parts = [f"{cnt['done']}/{len(cur)} xong"]  # noqa
+            if cnt["run"]:
+                parts.append(f"{cnt['run']} đang gửi")
+            if cnt["retry"]:
+                parts.append(f"{cnt['retry']} đang thử lại")
+            if cnt["queued"]:
+                parts.append(f"{cnt['queued']} đang chờ")
+            if cnt["fail"]:
+                parts.append(f"{cnt['fail']} lỗi")
+            text += "  ·  " + ", ".join(parts)
+            if running:
+                j = min(running, key=lambda x: self._job_start.get(x, now))
+            else:
+                j = None
+            if j:
+                r = self._job_rows[j]
+                name = self.jobs.item(r, 0).text().split(" · ")[0]
+                src = self.jobs.item(r, 2).text().split(" · ")[0]
+                waited = now - self._job_start.get(j, now)
+                text += f"\n{name}: chờ {src or 'AI'} trả lời {waited:.0f}s"
+                if waited > 60:
+                    text += " (batch lớn/model suy nghĩ lâu)"
+        self.lb_stage.setText(text)
+
     def _on_progress(self, done, total):
-        self.lb_batch.setText(f"Batch  {done}/{total}")
+        self.lb_batch.setText(f"Batch {done}/{total}")
         self._set_pct(int(done * 100 / total) if total else 0)
 
     def _set_pct(self, v: int):
@@ -777,13 +954,21 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         self._tick()
         self._set_running(False)
+        self._stage_text = msg
         if msg.startswith("Xong"):
+            for lab in self.step_lbls.values():
+                if lab.property("state") == "now":
+                    lab.setProperty("state", "done"); repolish(lab)
             self._set_pct(100)
             self._set_pill("Hoàn tất", "ok")
         elif msg.startswith("Đã dừng"):
             self._set_pill("Đã dừng")
+            for j, st in list(self._job_state.items()):
+                if st in ("run", "retry", "queued"):
+                    self._update_job({"id": j, "state": "fail", "info": "đã dừng theo yêu cầu"})
         else:
             self._set_pill("Có lỗi", "err")
+        self._refresh_stage()
         self._log(f"■ {msg}")
 
     def _set_running(self, running: bool):
@@ -794,8 +979,9 @@ class MainWindow(QMainWindow):
             self._set_pill("Đang dịch…", "run")
 
     def _tick(self):
+        self._refresh_stage()
         s = int(time.monotonic() - self.t0)
-        self.lb_time.setText(f"⏱  {s // 60}:{s % 60:02d}" if s >= 60 else f"⏱  {s}s")
+        self.lb_time.setText(f"⏱ {s // 60}:{s % 60:02d}" if s >= 60 else f"⏱ {s}s")
 
     # ---------- check format
     def _check_format(self):

@@ -33,6 +33,12 @@ Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator
 7. **Check dịch sót:** so file gốc với file đã dịch, tìm câu trống, câu còn chữ Hán/Nhật/Hàn hoặc câu giống hệt bản gốc, rồi chỉ dịch lại những câu đó.
 8. **Check format:** kiểm tra số thứ tự, timecode và dòng trống. Nếu có lỗi, app có thể tự sửa; file cũ được sao lưu thành `.bak`.
 
+## Xem app đang làm gì
+
+Dưới thanh % luôn có dòng trạng thái: đang ở bước nào (Tách tiếng, Nghe giọng, Dịch, Dịch bù, Lưu file), bao nhiêu việc đã xong hay đang gửi, và việc nào đang chờ AI trả lời bao lâu rồi.
+
+Bấm **⤢ Phóng to** để thẻ tiến độ chiếm cả cửa sổ, với một bảng liệt kê từng batch hoặc từng đoạn nghe: câu số mấy, gửi cho nguồn nào, đang chạy, đang thử lại hay đã xong, mất bao lâu. Bấm **⤡ Thu nhỏ** để quay lại màn hình cài đặt và nhật ký. App nhớ chế độ bạn chọn cho lần mở sau.
+
 ## Tạo phụ đề từ video (nghe giọng bằng Vertex AI)
 
 Dùng cho phim không có file phụ đề riêng, ví dụ phim Bilibili có chữ in cứng vào hình.
