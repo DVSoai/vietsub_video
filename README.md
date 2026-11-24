@@ -1,5 +1,7 @@
 # Subtitle Translator
 
+![Giao diện](docs/screenshot.png)
+
 App desktop dịch phụ đề `.srt` bằng AI (Gemini, Claude, OpenAI/Codex, DeepSeek, OpenRouter hoặc bất kỳ API nào theo chuẩn OpenAI). Dịch theo batch, chạy nhiều luồng song song, tự thử lại khi bị giới hạn tốc độ và tự dịch bù câu sót.
 
 ## Chạy
@@ -17,7 +19,7 @@ Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator
 
 1. **Nhà cung cấp:** chọn nơi bạn có API key. Dán key vào ô API Key; có nhiều key thì mỗi dòng một key, app sẽ xoay vòng giữa các key.
 2. **Mô hình:** bấm **Lấy model** để tải danh sách model thật của key đó, rồi chọn một model. Bấm **Thử kết nối** để kiểm tra.
-3. **Input File:** chọn một hoặc nhiều file `.srt`, ví dụ cả bộ phim. **Output** để trống thì file dịch được lưu cạnh file gốc, tên dạng `ten-phim.vi.srt`.
+3. **Phụ đề:** kéo thả một hoặc nhiều file `.srt` vào ô nét đứt (hoặc bấm vào ô đó để chọn), ví dụ cả bộ phim. **Output** để trống thì file dịch được lưu cạnh file gốc, tên dạng `ten-phim.vi.srt`.
 4. **Số luồng / Request/phút / Batch size:**
    - Số luồng là số batch gửi cùng lúc.
    - Request/phút nên đặt bằng hoặc thấp hơn giới hạn RPM của gói API của bạn, để không bị lỗi 429.
@@ -44,3 +46,4 @@ Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator
 | `app/providers.py` | Gọi API: lớp chung cho chuẩn OpenAI và lớp riêng cho Claude |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
 | `app/gui.py` | Giao diện PySide6 |
+| `app/theme.py` | Màu sắc, kiểu dáng (giao diện tối), icon app |

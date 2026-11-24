@@ -1,6 +1,7 @@
 """Giao diện Subtitle Translator (PySide6)."""
 from __future__ import annotations
 
+import html
 import json
 import os
 import shutil
@@ -11,12 +12,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSpinBox, QVBoxLayout, QWidget,
 )
 
-from . import srt
+from . import srt, theme
 from .providers import PROVIDERS, ProviderError, make_provider
 from .translator import Settings, Stopped, Translator, needs_retranslation
 
@@ -134,149 +135,260 @@ class Task(QThread):
 
 
 # ---------------------------------------------------------------- window
-def _box() -> QFrame:
+# ---------------------------------------------------------------- widget nhỏ
+def card(title: str, step: str | None = None) -> tuple[QFrame, QVBoxLayout]:
     f = QFrame()
-    f.setFrameShape(QFrame.StyledPanel)
-    return f
+    f.setObjectName("card")
+    v = QVBoxLayout(f)
+    v.setContentsMargins(18, 16, 18, 18)
+    v.setSpacing(12)
+    head = QHBoxLayout()
+    head.setSpacing(10)
+    if step:
+        s = QLabel(step); s.setObjectName("step"); head.addWidget(s)
+    t = QLabel(title); t.setObjectName("cardTitle"); head.addWidget(t)
+    head.addStretch(1)
+    v.addLayout(head)
+    return f, v
+
+
+def field(label: str, widget, hint: str | None = None) -> QVBoxLayout:
+    v = QVBoxLayout()
+    v.setSpacing(5)
+    lab = QLabel(label.upper()); lab.setObjectName("fieldLabel")
+    v.addWidget(lab)
+    if isinstance(widget, QWidget):
+        v.addWidget(widget)
+    else:
+        v.addLayout(widget)
+    if hint:
+        h = QLabel(hint); h.setObjectName("hint"); h.setWordWrap(True)
+        v.addWidget(h)
+    return v
+
+
+def btn(text: str, kind: str | None = None, tip: str | None = None) -> QPushButton:
+    b = QPushButton(text)
+    if kind:
+        b.setObjectName(kind)
+    if tip:
+        b.setToolTip(tip)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+def repolish(w: QWidget):
+    w.style().unpolish(w)
+    w.style().polish(w)
+
+
+class DropZone(QFrame):
+    """Ô kéo-thả file .srt (hoặc bấm để chọn)."""
+    files_dropped = Signal(list)
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("drop")
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(92)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(18, 12, 18, 12)
+        h.setSpacing(14)
+        icon = QLabel("⇪"); icon.setObjectName("dropIcon")
+        h.addWidget(icon)
+        col = QVBoxLayout(); col.setSpacing(2)
+        self.title = QLabel("Kéo thả file .srt vào đây"); self.title.setObjectName("dropTitle")
+        self.sub = QLabel("hoặc bấm để chọn — chọn nhiều file để dịch cả bộ phim")
+        self.sub.setObjectName("muted")
+        self.title.setWordWrap(True); self.sub.setWordWrap(True)
+        col.addWidget(self.title); col.addWidget(self.sub)
+        h.addLayout(col, 1)
+
+    def set_files(self, files: list[str]):
+        if not files:
+            return
+        if len(files) == 1:
+            self.title.setText(Path(files[0]).name)
+            self.sub.setText(str(Path(files[0]).parent))
+        else:
+            self.title.setText(f"{len(files)} file phụ đề")
+            names = ", ".join(Path(f).name for f in files[:3])
+            self.sub.setText(names + (" …" if len(files) > 3 else ""))
+
+    def mousePressEvent(self, e):
+        self.clicked.emit()
+
+    def _set_active(self, on: bool):
+        self.setProperty("active", on)
+        repolish(self)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction(); self._set_active(True)
+
+    def dragLeaveEvent(self, e):
+        self._set_active(False)
+
+    def dropEvent(self, e):
+        self._set_active(False)
+        files = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(".srt")]
+        if files:
+            self.files_dropped.emit(files)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Subtitle Translator")
-        self.resize(1000, 620)
+        self.setWindowIcon(theme.app_icon())
+        self.resize(1180, 820)
+        self.setMinimumSize(1000, 800)
         PROMPTS.mkdir(parents=True, exist_ok=True)
         self.cfg = self._load_cfg()
         self.worker: Worker | None = None
         self.files: list[str] = []
         self.t0 = 0.0
 
-        # ----- cột trái
-        left = _box()
-        lf = QFormLayout(left)
-        lf.setLabelAlignment(Qt.AlignLeft)
-        self.cb_provider = QComboBox()
-        self.cb_provider.addItems(PROVIDERS.keys())
-        self.cb_model = QComboBox()
-        self.cb_model.setEditable(True)
-        self.btn_models = QPushButton("Lấy model")
-        mrow = QHBoxLayout()
-        mrow.addWidget(self.cb_model, 1)
-        mrow.addWidget(self.btn_models)
-        self.ed_base = QLineEdit()
-        self.ed_base.setPlaceholderText("vd: https://api.groq.com/openai/v1")
-        self.ed_input = QLineEdit()
-        self.ed_input.setReadOnly(True)
-        self.ed_input.setPlaceholderText("Bấm để chọn 1 hoặc nhiều file .srt")
-        self.btn_input = QPushButton("Chọn file…")
-        irow = QHBoxLayout()
-        irow.addWidget(self.ed_input, 1)
-        irow.addWidget(self.btn_input)
-        self.ed_output = QLineEdit()
-        self.ed_output.setPlaceholderText("Để trống = cùng thư mục file gốc")
-        self.btn_output = QPushButton("Chọn…")
-        orow = QHBoxLayout()
-        orow.addWidget(self.ed_output, 1)
-        orow.addWidget(self.btn_output)
+        # ===== header
+        title = QLabel("Subtitle Translator"); title.setObjectName("appTitle")
+        sub = QLabel("Dịch phụ đề .srt bằng AI — Gemini · Claude · OpenAI · DeepSeek · OpenRouter")
+        sub.setObjectName("appSub")
+        tcol = QVBoxLayout(); tcol.setSpacing(2)
+        tcol.addWidget(title); tcol.addWidget(sub)
+        self.pill = QLabel("●  Sẵn sàng"); self.pill.setObjectName("pill")
+        header = QHBoxLayout()
+        logo = QLabel(); logo.setPixmap(theme.app_icon().pixmap(44, 44))
+        header.addWidget(logo); header.addSpacing(6)
+        header.addLayout(tcol, 1)
+        header.addWidget(self.pill, 0, Qt.AlignTop)
+
+        # ===== thẻ 1: Kết nối AI
+        c1, v1 = card("Kết nối AI", "1")
+        self.cb_provider = QComboBox(); self.cb_provider.addItems(PROVIDERS.keys())
+        self.cb_model = QComboBox(); self.cb_model.setEditable(True)
+        self.cb_model.lineEdit().setPlaceholderText("Bấm “Lấy model” hoặc gõ tên model")
+        self.btn_models = btn("Lấy model", "ghost", "Tải danh sách model thật của API key")
+        mrow = QHBoxLayout(); mrow.setSpacing(8)
+        mrow.addWidget(self.cb_model, 1); mrow.addWidget(self.btn_models)
+        self.ed_base = QLineEdit(); self.ed_base.setPlaceholderText("vd: https://api.groq.com/openai/v1")
+        self.ed_keys = QPlainTextEdit()
+        self.ed_keys.setPlaceholderText("Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
+        self.ed_keys.setMinimumHeight(64); self.ed_keys.setMaximumHeight(90)
+        self.btn_test = btn("⚡  Thử kết nối", "ghost")
+        self.base_wrap = QWidget()
+        bw = QVBoxLayout(self.base_wrap); bw.setContentsMargins(0, 0, 0, 0)
+        bw.addLayout(field("Base URL", self.ed_base))
+        v1.addLayout(field("Nhà cung cấp", self.cb_provider))
+        v1.addLayout(field("Mô hình", mrow))
+        v1.addWidget(self.base_wrap)
+        v1.addLayout(field("API key", self.ed_keys))
+        trow = QHBoxLayout(); trow.addWidget(self.btn_test); trow.addStretch(1)
+        v1.addLayout(trow)
+        v1.addStretch(1)
+
+        # ===== thẻ 2: Phụ đề
+        c2, v2 = card("Phụ đề", "2")
+        self.drop = DropZone()
+        self.ed_output = QLineEdit(); self.ed_output.setPlaceholderText("Để trống = lưu cạnh file gốc")
+        self.btn_output = btn("Chọn…", "ghost")
+        orow = QHBoxLayout(); orow.setSpacing(8)
+        orow.addWidget(self.ed_output, 1); orow.addWidget(self.btn_output)
+        self.cb_source = QComboBox(); self.cb_source.addItems(LANGS)
+        self.cb_target = QComboBox(); self.cb_target.addItems(LANGS)
+        self.btn_swap = btn("⇄", "ghost", "Đổi chiều dịch"); self.btn_swap.setFixedWidth(44)
+        lrow = QHBoxLayout(); lrow.setSpacing(8)
+        lrow.addLayout(field("Dịch từ", self.cb_source), 1)
+        swap_col = QVBoxLayout(); swap_col.addStretch(1); swap_col.addWidget(self.btn_swap)
+        lrow.addLayout(swap_col)
+        lrow.addLayout(field("Dịch ra", self.cb_target), 1)
+        self.cb_prompt = QComboBox()
+        self.btn_upload_prompt = btn("Tải lên", "link", "Thêm file prompt .txt")
+        self.btn_edit_prompt = btn("Sửa", "link", "Mở file prompt để sửa (chưa có thì tạo mẫu)")
+        self.btn_del_prompt = btn("Xóa", "link", "Xóa file prompt đang chọn")
+        prow = QHBoxLayout(); prow.setSpacing(2)
+        prow.addWidget(self.cb_prompt, 1)
+        for b in (self.btn_upload_prompt, self.btn_edit_prompt, self.btn_del_prompt):
+            prow.addWidget(b)
+        v2.addWidget(self.drop)
+        v2.addLayout(field("Lưu vào thư mục", orow))
+        v2.addLayout(lrow)
+        v2.addLayout(field("Prompt riêng cho phim", prow,
+                           "Tên nhân vật, xưng hô, giữ từ Hán Việt… — dòng bắt đầu bằng # là ghi chú"))
+
+        # ===== thẻ 3: Tốc độ
+        c3, v3 = card("Tốc độ", "3")
         self.sp_threads = QSpinBox(); self.sp_threads.setRange(1, 64)
         self.sp_rpm = QSpinBox(); self.sp_rpm.setRange(0, 10000)
         self.sp_rpm.setSpecialValueText("Không giới hạn")
         self.sp_batch = QSpinBox(); self.sp_batch.setRange(1, 300)
+        srow = QHBoxLayout(); srow.setSpacing(14); srow.setAlignment(Qt.AlignTop)
+        srow.addLayout(field("Số luồng", self.sp_threads, "Số batch gửi cùng lúc"), 1)
+        srow.addLayout(field("Request / phút", self.sp_rpm, "Theo RPM của gói API"), 1)
+        srow.addLayout(field("Batch size", self.sp_batch, "Câu mỗi lần gửi (30–60)"), 1)
+        v3.addLayout(srow)
 
-        def hint(widget, text):
-            row = QHBoxLayout()
-            row.addWidget(widget)
-            lab = QLabel(text)
-            lab.setStyleSheet("color:#c0392b; font-style:italic")
-            row.addWidget(lab, 1)
-            return row
+        # ===== thẻ nhật ký
+        c4, v4 = card("Nhật ký")
+        self.btn_clear = btn("Xóa", "link")
+        v4.itemAt(0).layout().addWidget(self.btn_clear)
+        self.log_box = QPlainTextEdit(); self.log_box.setObjectName("log")
+        self.log_box.setReadOnly(True); self.log_box.setMaximumBlockCount(5000)
+        self.log_box.setMinimumHeight(120)
+        self.log_box.setPlaceholderText("Nhật ký sẽ hiện ở đây…")
+        v4.addWidget(self.log_box, 1)
 
-        lf.addRow("Nhà cung cấp", self.cb_provider)
-        lf.addRow("Mô hình", mrow)
-        lf.addRow("Base URL", self.ed_base)
-        lf.addRow("Input File", irow)
-        lf.addRow("Output", orow)
-        lf.addRow("Số luồng", hint(self.sp_threads, "Số batch gửi cùng lúc"))
-        lf.addRow("Request/phút", hint(self.sp_rpm, "Đặt theo giới hạn (RPM) của gói API"))
-        lf.addRow("Batch size", hint(self.sp_batch, "Số câu mỗi lần gửi (30–60 là vừa)"))
+        left = QVBoxLayout(); left.setSpacing(14)
+        left.addWidget(c1, 1); left.addWidget(c3)
+        right = QVBoxLayout(); right.setSpacing(14)
+        right.addWidget(c2); right.addWidget(c4, 1)
+        cols = QHBoxLayout(); cols.setSpacing(14)
+        cols.addLayout(left, 1); cols.addLayout(right, 1)
 
-        # ----- cột phải
-        right = _box()
-        rg = QGridLayout(right)
-        self.ed_keys = QPlainTextEdit()
-        self.ed_keys.setPlaceholderText("Dán API key — nhiều key thì mỗi dòng một key, app sẽ xoay vòng")
-        self.ed_keys.setFixedHeight(70)
-        self.cb_target = QComboBox(); self.cb_target.addItems(LANGS)
-        self.cb_source = QComboBox(); self.cb_source.addItems(LANGS)
-        self.cb_prompt = QComboBox()
-        self.btn_upload_prompt = QPushButton("Upload File Prompt")
-        self.btn_edit_prompt = QPushButton("Sửa prompt")
-        self.btn_del_prompt = QPushButton("Xóa file")
-        self.btn_test = QPushButton("Thử kết nối")
-        rg.addWidget(QLabel("API Key"), 0, 0, Qt.AlignTop)
-        rg.addWidget(self.ed_keys, 0, 1, 1, 3)
-        rg.addWidget(QLabel("Dịch ra"), 1, 0); rg.addWidget(self.cb_target, 1, 1)
-        rg.addWidget(QLabel("Dịch từ"), 2, 0); rg.addWidget(self.cb_source, 2, 1)
-        rg.addWidget(QLabel("Prompt"), 3, 0); rg.addWidget(self.cb_prompt, 3, 1, 1, 3)
-        rg.addWidget(self.btn_upload_prompt, 4, 1, 1, 3)
-        prow = QHBoxLayout()
-        prow.addWidget(self.btn_edit_prompt); prow.addWidget(self.btn_del_prompt)
-        prow.addWidget(self.btn_test); prow.addStretch(1)
-        rg.addLayout(prow, 5, 1, 1, 3)
-        rg.setColumnStretch(2, 1)
-        rg.setRowStretch(6, 1)
-
-        top = QHBoxLayout()
-        top.addWidget(left, 1)
-        top.addWidget(right, 1)
-
-        # ----- tiến độ + nút
-        self.bar = QProgressBar(); self.bar.setValue(0)
-        self.bar.setStyleSheet("QProgressBar::chunk{background:#1e8a1e}")
-        self.lb_batch = QLabel("Batch: 0/0")
-        self.lb_file = QLabel("File: 0/0")
-        self.lb_time = QLabel("Elapsed: 0s")
-        prog = QHBoxLayout()
-        prog.addWidget(QLabel("Progress"))
-        prog.addWidget(self.bar, 1)
+        # ===== thanh hành động
+        act = QFrame(); act.setObjectName("card")
+        av = QVBoxLayout(act); av.setContentsMargins(18, 16, 18, 16); av.setSpacing(12)
+        self.bar = QProgressBar(); self.bar.setValue(0); self.bar.setFixedHeight(12)
+        self.lb_pct = QLabel("0%"); self.lb_pct.setObjectName("cardTitle"); self.lb_pct.setMinimumWidth(48)
+        self.lb_pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        brow = QHBoxLayout(); brow.addWidget(self.bar, 1); brow.addWidget(self.lb_pct)
+        self.lb_file = QLabel("File  0/0"); self.lb_batch = QLabel("Batch  0/0")
+        self.lb_time = QLabel("⏱  0s")
         for w in (self.lb_file, self.lb_batch, self.lb_time):
-            w.setMinimumWidth(90)
-            prog.addWidget(w)
-
-        self.btn_run = QPushButton("Dịch")
-        self.btn_stop = QPushButton("Dừng")
-        self.btn_quit = QPushButton("Thoát")
-        self.btn_fix = QPushButton("Check dịch sót")
-        self.btn_fmt = QPushButton("Check format")
-        btns = QHBoxLayout()
-        for b in (self.btn_run, self.btn_stop, self.btn_quit):
-            b.setMinimumWidth(100); btns.addWidget(b)
-        btns.addStretch(1)
-        for b in (self.btn_fix, self.btn_fmt):
-            b.setMinimumWidth(120); btns.addWidget(b)
+            w.setObjectName("chip")
+        self.btn_run = btn("▶   Bắt đầu dịch", "primary")
+        self.btn_stop = btn("■  Dừng", "danger")
+        self.btn_fix = btn("Check dịch sót", "ghost", "Tìm câu trống / còn chữ gốc trong file đã dịch và dịch lại")
+        self.btn_fmt = btn("Check format", "ghost", "Kiểm tra số thứ tự, timecode, dòng trống")
         self.btn_stop.setEnabled(False)
+        crow = QHBoxLayout(); crow.setSpacing(8)
+        for w in (self.lb_file, self.lb_batch, self.lb_time):
+            crow.addWidget(w)
+        crow.addStretch(1)
+        crow.addWidget(self.btn_fix); crow.addWidget(self.btn_fmt)
+        crow.addSpacing(10)
+        crow.addWidget(self.btn_stop); crow.addWidget(self.btn_run)
+        av.addLayout(brow); av.addLayout(crow)
 
-        self.log_box = QPlainTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setMaximumBlockCount(5000)
 
-        central = QWidget()
-        v = QVBoxLayout(central)
-        v.addLayout(top)
-        v.addLayout(prog)
-        v.addLayout(btns)
-        v.addWidget(self.log_box, 1)
-        self.setCentralWidget(central)
+        root = QWidget(); root.setObjectName("root")
+        v = QVBoxLayout(root); v.setContentsMargins(22, 18, 22, 18); v.setSpacing(14)
+        v.addLayout(header)
+        v.addLayout(cols, 1)
+        v.addWidget(act)
+        self.setCentralWidget(root)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
 
-        # ----- sự kiện
+        # ===== sự kiện
         self.cb_provider.currentTextChanged.connect(self._on_provider)
         self.btn_models.clicked.connect(self._fetch_models)
-        self.btn_input.clicked.connect(self._pick_input)
-        self.ed_input.mousePressEvent = lambda e: self._pick_input()
+        self.drop.clicked.connect(self._pick_input)
+        self.drop.files_dropped.connect(self._set_files)
         self.btn_output.clicked.connect(self._pick_output)
+        self.btn_swap.clicked.connect(self._swap_langs)
         self.btn_upload_prompt.clicked.connect(self._upload_prompt)
         self.btn_edit_prompt.clicked.connect(self._edit_prompt)
         self.btn_del_prompt.clicked.connect(self._delete_prompt)
@@ -284,10 +396,19 @@ class MainWindow(QMainWindow):
         self.btn_run.clicked.connect(lambda: self._start("translate"))
         self.btn_fix.clicked.connect(lambda: self._start("fix"))
         self.btn_stop.clicked.connect(self._stop)
-        self.btn_quit.clicked.connect(self.close)
         self.btn_fmt.clicked.connect(self._check_format)
+        self.btn_clear.clicked.connect(self.log_box.clear)
 
         self._apply_cfg()
+
+    def _set_pill(self, text: str, state: str = ""):
+        self.pill.setText(f"●  {text}")
+        self.pill.setProperty("state", state)
+        repolish(self.pill)
+
+    def _swap_langs(self):
+        s, t = self.cb_source.currentText(), self.cb_target.currentText()
+        self.cb_source.setCurrentText(t); self.cb_target.setCurrentText(s)
 
     # ---------- cấu hình
     def _load_cfg(self) -> dict:
@@ -339,17 +460,20 @@ class MainWindow(QMainWindow):
         self.cb_model.addItems(models)
         self.cb_model.setCurrentText(pc.get("model") or (models[0] if models else ""))
         custom = not p["base_url"]
-        self.ed_base.setEnabled(custom)
+        self.base_wrap.setVisible(custom)
         self.ed_base.setText(pc.get("base_url", "") if custom else p["base_url"])
 
     # ---------- chọn file
     def _pick_input(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Chọn file phụ đề", self.cfg.get("last_dir", ""), "Phụ đề (*.srt);;Tất cả (*.*)")
+        self._set_files(files)
+
+    def _set_files(self, files: list[str]):
         if files:
             self.files = files
             self.cfg["last_dir"] = str(Path(files[0]).parent)
-            self.ed_input.setText(files[0] if len(files) == 1 else f"{len(files)} file: {Path(files[0]).name}, …")
+            self.drop.set_files(files)
 
     def _pick_output(self):
         d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu", self.ed_output.text())
@@ -477,10 +601,10 @@ class MainWindow(QMainWindow):
         self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings)
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)
-        self.worker.file_progress.connect(lambda i, n: self.lb_file.setText(f"File: {i}/{n}"))
+        self.worker.file_progress.connect(lambda i, n: self.lb_file.setText(f"File  {i}/{n}"))
         self.worker.done.connect(self._on_done)
         self._set_running(True)
-        self.bar.setValue(0)
+        self._set_pct(0)
         self.t0 = time.monotonic()
         self.timer.start(500)
         self.worker.start()
@@ -491,25 +615,36 @@ class MainWindow(QMainWindow):
             self._log("Đang dừng… (chờ các request đang chạy kết thúc)")
 
     def _on_progress(self, done, total):
-        self.lb_batch.setText(f"Batch: {done}/{total}")
-        self.bar.setValue(int(done * 100 / total) if total else 0)
+        self.lb_batch.setText(f"Batch  {done}/{total}")
+        self._set_pct(int(done * 100 / total) if total else 0)
+
+    def _set_pct(self, v: int):
+        self.bar.setValue(v)
+        self.lb_pct.setText(f"{v}%")
 
     def _on_done(self, msg):
         self.timer.stop()
         self._tick()
         self._set_running(False)
         if msg.startswith("Xong"):
-            self.bar.setValue(100)
+            self._set_pct(100)
+            self._set_pill("Hoàn tất", "ok")
+        elif msg.startswith("Đã dừng"):
+            self._set_pill("Đã dừng")
+        else:
+            self._set_pill("Có lỗi", "err")
         self._log(f"■ {msg}")
 
     def _set_running(self, running: bool):
-        for w in (self.btn_run, self.btn_fix, self.btn_fmt, self.cb_provider, self.btn_input):
+        for w in (self.btn_run, self.btn_fix, self.btn_fmt, self.cb_provider, self.drop):
             w.setEnabled(not running)
         self.btn_stop.setEnabled(running)
+        if running:
+            self._set_pill("Đang dịch…", "run")
 
     def _tick(self):
         s = int(time.monotonic() - self.t0)
-        self.lb_time.setText(f"Elapsed: {s // 60}m{s % 60:02d}s" if s >= 60 else f"Elapsed: {s}s")
+        self.lb_time.setText(f"⏱  {s // 60}:{s % 60:02d}" if s >= 60 else f"⏱  {s}s")
 
     # ---------- check format
     def _check_format(self):
@@ -537,7 +672,14 @@ class MainWindow(QMainWindow):
                 self._log(f"✔ Đã sửa {Path(path).name} ({len(cues)} câu)")
 
     def _log(self, msg: str):
-        self.log_box.appendPlainText(msg)
+        for line in msg.split("\n"):
+            t = line.strip()
+            color = (theme.ACCENT if t.startswith(("✔", "■ Xong")) else theme.WARN if t.startswith("⚠")
+                     else theme.DANGER if t.startswith("✖") else theme.TEXT if t.startswith("━")
+                     else theme.MUTED)
+            weight = "600" if t.startswith(("━", "■")) else "400"
+            safe = html.escape(line).replace("  ", "&nbsp;&nbsp;")
+            self.log_box.appendHtml(f'<span style="color:{color}; font-weight:{weight}">{safe}</span>')
 
     def closeEvent(self, e):
         if self.worker and self.worker.isRunning():
@@ -550,9 +692,28 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
+def _dark_title_bar(w):
+    """Thanh tiêu đề tối trên Windows 10/11."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = int(w.winId())
+        val = ctypes.c_int(1)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (mới / cũ)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), 4) == 0:
+                break
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setFont(theme.app_font())
+    app.setStyleSheet(theme.stylesheet())
+    app.setWindowIcon(theme.app_icon())
     w = MainWindow()
     w.show()
+    _dark_title_bar(w)
     sys.exit(app.exec())
