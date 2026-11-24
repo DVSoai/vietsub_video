@@ -18,9 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from . import srt, theme
-from .providers import PROVIDERS, ProviderError, make_provider
+from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .translator import Settings, Stopped, Translator, needs_retranslation
 
+VERTEX_LOCATIONS = ["us-central1", "global", "asia-southeast1", "asia-northeast1", "asia-east1",
+                    "us-east4", "us-west1", "europe-west1", "europe-west4"]
 LANGS = ["Tiếng Trung", "Tiếng Việt", "Tiếng Anh", "Tiếng Nhật", "Tiếng Hàn", "Tiếng Thái",
          "Tiếng Indonesia", "Tiếng Pháp", "Tiếng Tây Ban Nha", "Tiếng Nga"]
 LANG_CODE = {"Tiếng Việt": "vi", "Tiếng Anh": "en", "Tiếng Trung": "zh", "Tiếng Nhật": "ja",
@@ -286,7 +288,22 @@ class MainWindow(QMainWindow):
         v1.addLayout(field("Nhà cung cấp", self.cb_provider))
         v1.addLayout(field("Mô hình", mrow))
         v1.addWidget(self.base_wrap)
-        v1.addLayout(field("API key", self.ed_keys))
+        kv = QVBoxLayout(); kv.setSpacing(5)
+        khead = QHBoxLayout()
+        self.lb_keys = QLabel("API KEY"); self.lb_keys.setObjectName("fieldLabel")
+        self.btn_json = btn("Chọn file JSON…", "link", "Chọn file service account .json (chọn nhiều file = xoay vòng)")
+        khead.addWidget(self.lb_keys); khead.addStretch(1); khead.addWidget(self.btn_json)
+        kv.addLayout(khead); kv.addWidget(self.ed_keys)
+        # Vertex service account: Project ID + Location
+        self.sa_wrap = QWidget()
+        sw = QHBoxLayout(self.sa_wrap); sw.setContentsMargins(0, 0, 0, 0); sw.setSpacing(10)
+        self.ed_project = QLineEdit(); self.ed_project.setPlaceholderText("tự đọc từ file JSON")
+        self.cb_location = QComboBox(); self.cb_location.setEditable(True)
+        self.cb_location.addItems(VERTEX_LOCATIONS)
+        sw.addLayout(field("Project ID", self.ed_project), 3)
+        sw.addLayout(field("Location", self.cb_location), 2)
+        v1.addLayout(kv)
+        v1.addWidget(self.sa_wrap)
         trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_test)
         v1.addLayout(trow)
         v1.addWidget(self.lb_using)
@@ -403,6 +420,7 @@ class MainWindow(QMainWindow):
         self.btn_fmt.clicked.connect(self._check_format)
         self.btn_clear.clicked.connect(self.log_box.clear)
         self.chk_use.toggled.connect(self._on_use_toggled)
+        self.btn_json.clicked.connect(self._pick_json)
         self.ed_keys.textChanged.connect(self._refresh_using)
         self.cb_model.currentTextChanged.connect(self._refresh_using)
 
@@ -442,6 +460,9 @@ class MainWindow(QMainWindow):
         pc["model"] = self.cb_model.currentText().strip()
         pc["base_url"] = self.ed_base.text().strip()
         pc["enabled"] = self.chk_use.isChecked()
+        if PROVIDERS[name]["kind"] == "vertex_sa":
+            pc["project"] = self.ed_project.text().strip()
+            pc["location"] = self.cb_location.currentText().strip() or "us-central1"
 
     def _save_cfg(self):
         self._save_provider_state(self.cb_provider.currentText())
@@ -472,9 +493,20 @@ class MainWindow(QMainWindow):
         self.chk_use.blockSignals(True)
         self.chk_use.setChecked(bool(pc.get("enabled")))
         self.chk_use.blockSignals(False)
-        custom = not p["base_url"]
+        sa = p["kind"] == "vertex_sa"
+        self.sa_wrap.setVisible(sa)
+        self.btn_json.setVisible(sa)
+        self.lb_keys.setText("FILE SERVICE ACCOUNT (.JSON)" if sa else "API KEY")
+        self.ed_keys.setPlaceholderText(
+            "Bấm “Chọn file JSON…” (vd: vertex.json)\nNhiều file: mỗi dòng một đường dẫn" if sa else
+            "Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
+        self.ed_project.setText(pc.get("project", ""))
+        self.cb_location.setCurrentText(pc.get("location", "us-central1"))
+        custom = not p["base_url"] and not sa
         self.base_wrap.setVisible(custom)
         self.ed_base.setText(pc.get("base_url", "") if custom else p["base_url"])
+        if sa:
+            self.ed_base.setText("")
         self._loading = False
         self._refresh_using()
 
@@ -557,13 +589,24 @@ class MainWindow(QMainWindow):
         model = self.cb_model.currentText().strip()
         if need_key and not model:
             raise ProviderError("Chưa chọn mô hình")
-        return [make_provider(self.cb_provider.currentText(), k, model, self.ed_base.text())
+        return [make_provider(self.cb_provider.currentText(), k, model, self.ed_base.text(),
+                              self.ed_project.text(), self.cb_location.currentText())
                 for k in (keys or [""])]
+
+    def _pick_json(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Chọn file service account", "",
+                                                "Service account (*.json);;Tất cả (*.*)")
+        if not files:
+            return
+        cur = self._keys()
+        self.ed_keys.setPlainText("\n".join(dict.fromkeys(cur + files)))
+        if not self.ed_project.text().strip():
+            self.ed_project.setText(project_from_json(files[0]))
 
     def _on_use_toggled(self, on: bool):
         self._refresh_using()
 
-    def _sources(self) -> list[tuple[str, list[str], str, str]]:
+    def _sources(self) -> list[tuple[str, list[str], str, dict]]:
         """Các nguồn sẽ dùng khi dịch: [(tên, keys, model, base_url)].
         Không bật nguồn nào -> chỉ dùng nhà cung cấp đang chọn."""
         cur = self.cb_provider.currentText()
@@ -574,11 +617,11 @@ class MainWindow(QMainWindow):
             pc = self.cfg.get("per_provider", {}).get(name, {})
             keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
             if pc.get("enabled") and keys and pc.get("model"):
-                out.append((name, keys, pc["model"], pc.get("base_url", "")))
+                out.append((name, keys, pc["model"], pc))
         if not out and cur:
             pc = self.cfg["per_provider"][cur]
             keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
-            out.append((cur, keys, pc.get("model", ""), pc.get("base_url", "")))
+            out.append((cur, keys, pc.get("model", ""), pc))
         return out
 
     def _refresh_using(self, *_):
@@ -586,7 +629,8 @@ class MainWindow(QMainWindow):
             return
         src = self._sources()
         any_enabled = any(pc.get("enabled") for pc in self.cfg.get("per_provider", {}).values())
-        parts = [f"<b>{n.split(' (')[0]}</b> ({len(k)} key)" for n, k, _, _ in src if k]
+        parts = [f"<b>{n.split(' (')[0]}</b> ({len(k)} {'file' if PROVIDERS[n]['kind'] == 'vertex_sa' else 'key'})"
+                 for n, k, _, _ in src if k]
         if not parts:
             text = "Khi dịch: chưa có API key nào."
         elif any_enabled:
@@ -597,12 +641,13 @@ class MainWindow(QMainWindow):
 
     def _make_translate_providers(self):
         provs = []
-        for name, keys, model, base in self._sources():
+        for name, keys, model, pc in self._sources():
             if not keys:
                 raise ProviderError(f"{name}: chưa nhập API key")
             if not model:
                 raise ProviderError(f"{name}: chưa chọn mô hình")
-            provs += [make_provider(name, k, model, base) for k in keys]
+            provs += [make_provider(name, k, model, pc.get("base_url", ""),
+                                    pc.get("project", ""), pc.get("location", "")) for k in keys]
         if not provs:
             raise ProviderError("Chưa nhập API key")
         return provs

@@ -6,6 +6,9 @@
 """
 from __future__ import annotations
 
+import json
+import threading
+
 import requests
 
 TIMEOUT = 180
@@ -33,6 +36,11 @@ PROVIDERS: dict[str, dict] = {
     "Vertex AI (API key)": {
         "kind": "vertex",
         "base_url": "https://aiplatform.googleapis.com/v1",
+        "models": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+    },
+    "Vertex AI (Service account JSON)": {
+        "kind": "vertex_sa",
+        "base_url": "",  # tự tính từ Location + Project ID
         "models": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
     },
     "Claude (Anthropic)": {
@@ -184,10 +192,18 @@ class VertexProvider(Provider):
         super().__init__(*a, **kw)
         self.use_safety = True  # phim đánh nhau dễ bị chặn nhầm -> tắt bộ lọc nếu được phép
 
+    def _url(self, model: str) -> str:
+        return f"{self.base_url}/{model}:generateContent"
+
+    def _auth(self) -> tuple[dict, dict]:
+        """(params, headers) xác thực."""
+        return {"key": self.api_key}, {}
+
     def chat(self, system: str, user: str) -> str:
         model = self.model.removeprefix("google/")
         if not model.startswith("publishers/"):
             model = f"publishers/google/models/{model}"
+        params, headers = self._auth()
         body = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -196,8 +212,7 @@ class VertexProvider(Provider):
         sent_safety = self.use_safety
         if sent_safety:
             body["safetySettings"] = self.SAFETY
-        resp = self._post(f"{self.base_url}/{model}:generateContent",
-                          params={"key": self.api_key}, json=body)
+        resp = self._post(self._url(model), params=params, headers=headers, json=body)
         if resp.status_code == 400 and sent_safety and "safety" in resp.text.lower():
             self.use_safety = False  # tài khoản không cho tắt bộ lọc -> gửi lại không kèm
             raise RetryableError("Vertex không cho tắt bộ lọc an toàn, gửi lại với mặc định", 0.1)
@@ -218,8 +233,84 @@ class VertexProvider(Provider):
                             "(vd: gemini-2.5-flash) vào ô Mô hình")
 
 
-def make_provider(name: str, api_key: str, model: str, base_url: str | None = None) -> Provider:
+class _SATokens:
+    """Đổi file service account JSON -> access token (cache, tự làm mới, dùng chung mọi luồng)."""
+    _cache: dict[str, "_SATokens"] = {}
+    _cache_lock = threading.Lock()
+
+    def __init__(self, path: str):
+        try:
+            from google.oauth2 import service_account
+        except ImportError as e:  # pragma: no cover
+            raise ProviderError("Thiếu thư viện google-auth: chạy  pip install google-auth") from e
+        try:
+            self.info = json.load(open(path, encoding="utf-8"))
+            self.creds = service_account.Credentials.from_service_account_info(
+                self.info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        except FileNotFoundError:
+            raise ProviderError(f"Không thấy file service account: {path}")
+        except (ValueError, KeyError) as e:
+            raise ProviderError(f"File JSON không phải service account hợp lệ: {e}")
+        self.lock = threading.Lock()
+
+    @classmethod
+    def get(cls, path: str) -> "_SATokens":
+        with cls._cache_lock:
+            if path not in cls._cache:
+                cls._cache[path] = cls(path)
+            return cls._cache[path]
+
+    def token(self) -> str:
+        from google.auth.exceptions import RefreshError, TransportError
+        from google.auth.transport.requests import Request
+        with self.lock:
+            if not self.creds.valid:  # hết hạn hoặc sắp hết (google-auth tự trừ hao)
+                try:
+                    self.creds.refresh(Request())
+                except RefreshError as e:
+                    raise ProviderError(f"Service account bị từ chối: {e}")
+                except TransportError as e:
+                    raise RetryableError(f"Lỗi mạng khi lấy token: {e}")
+            return self.creds.token
+
+
+def project_from_json(path: str) -> str:
+    try:
+        return json.load(open(path, encoding="utf-8")).get("project_id", "")
+    except (OSError, ValueError):
+        return ""
+
+
+class VertexSAProvider(VertexProvider):
+    """Vertex AI bằng file service account JSON + Project ID + Location."""
+
+    def __init__(self, json_path: str, model: str, base_url: str, project: str = "", location: str = ""):
+        super().__init__(json_path, model, base_url)
+        self.tokens = _SATokens.get(self.api_key)
+        self.project = project.strip() or self.tokens.info.get("project_id", "")
+        self.location = (location or "us-central1").strip()
+        if not self.project:
+            raise ProviderError("Chưa có Project ID (file JSON cũng không ghi project_id)")
+        if not base_url:
+            host = ("aiplatform.googleapis.com" if self.location == "global"
+                    else f"{self.location}-aiplatform.googleapis.com")
+            self.base_url = f"https://{host}/v1"
+        self.base_url = f"{self.base_url}/projects/{self.project}/locations/{self.location}"
+
+    def _auth(self):
+        return {}, {"Authorization": f"Bearer {self.tokens.token()}"}
+
+    def list_models(self) -> list[str]:
+        raise ProviderError("Hãy gõ tên model Gemini (vd: gemini-2.5-flash) vào ô Mô hình")
+
+
+def make_provider(name: str, api_key: str, model: str, base_url: str | None = None,
+                  project: str = "", location: str = "") -> Provider:
     cfg = PROVIDERS[name]
+    if cfg["kind"] == "vertex_sa":
+        prov = VertexSAProvider(api_key, model, (base_url or "").strip(), project, location)
+        prov.label = f"Vertex AI · {model} · {prov.project}"
+        return prov
     url = (base_url or cfg["base_url"]).strip()
     if not url:
         raise ProviderError("Chưa nhập Base URL cho nhà cung cấp tùy chỉnh")
