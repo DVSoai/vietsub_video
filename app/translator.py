@@ -109,12 +109,29 @@ class Translator:
         self.system = build_system_prompt(self.settings)
         self._rr = 0
         self._rr_lock = threading.Lock()
+        self._dead: set[int] = set()
+
+    def _alive(self) -> list[Provider]:
+        return [p for p in self.providers if id(p) not in self._dead]
 
     def _next_provider(self) -> Provider:
         with self._rr_lock:
-            p = self.providers[self._rr % len(self.providers)]
+            alive = self._alive()
+            if not alive:
+                raise ProviderError("Tất cả API key / nhà cung cấp đều lỗi")
+            p = alive[self._rr % len(alive)]
             self._rr += 1
             return p
+
+    def _drop(self, prov: Provider, err: Exception) -> bool:
+        """Loại provider lỗi hẳn (sai key, sai model...). Trả về True nếu vẫn còn provider khác."""
+        with self._rr_lock:
+            if id(prov) not in self._dead:
+                self._dead.add(id(prov))
+                left = len(self._alive())
+                self.cb.log(f"  ✖ Loại {getattr(prov, 'label', '?')}: {str(err)[:160]}"
+                            + (f" → còn {left} nguồn dịch" if left else ""))
+            return bool(self._alive())
 
     # ---- một batch ----
     def _translate_batch(self, items: dict[str, str]) -> dict[str, str]:
@@ -124,14 +141,17 @@ class Translator:
             if self.stop.is_set():
                 raise Stopped()
             self.limiter.wait(self.stop)
+            prov = self._next_provider()
             try:
-                reply = self._next_provider().chat(self.system, user)
+                reply = prov.chat(self.system, user)
                 result = parse_json_reply(reply)
                 got = {k: result[k] for k in items if k in result}
                 if len(got) >= max(1, int(len(items) * 0.5)):
                     return got  # thiếu vài câu thì để vòng dịch bù xử lý
                 last_err = f"chỉ nhận {len(got)}/{len(items)} câu"
-            except ProviderError:
+            except ProviderError as e:
+                if self._drop(prov, e):
+                    continue  # thử lại batch này bằng nguồn khác
                 raise
             except RetryableError as e:
                 last_err = str(e)

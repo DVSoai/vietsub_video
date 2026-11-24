@@ -40,6 +40,24 @@ def _arrow(direction: str, color: str = MUTED) -> str:
     return out.as_posix()
 
 
+def _tick() -> str:
+    out = Path(tempfile.gettempdir()) / "st_tick.png"
+    if out.exists():
+        return out.as_posix()
+    pm = QPixmap(18, 18)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor("#04150f"), 2.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    path = QPainterPath(QPointF(4.5, 9.5))
+    path.lineTo(7.5, 12.5)
+    path.lineTo(13.5, 5.5)
+    p.drawPath(path)
+    p.end()
+    pm.save(str(out))
+    return out.as_posix()
+
+
 def app_icon() -> QIcon:
     pm = QPixmap(128, 128)
     pm.fill(Qt.transparent)
@@ -67,7 +85,7 @@ def app_font() -> QFont:
 
 
 def stylesheet() -> str:
-    down, up = _arrow("down"), _arrow("up")
+    down, up, tick = _arrow("down"), _arrow("up"), _tick()
     return f"""
 * {{ color: {TEXT}; outline: none; }}
 QMainWindow, #root {{ background: {BG}; }}
@@ -88,6 +106,14 @@ QToolTip {{ background: {CARD_2}; color: {TEXT}; border: 1px solid {BORDER}; pad
 #pill[state="run"] {{ color: {ACCENT_HOVER}; border-color: {ACCENT_DARK}; background: #10241f; }}
 #pill[state="err"] {{ color: {DANGER}; border-color: #5a2630; background: #2a1419; }}
 #pill[state="ok"] {{ color: {ACCENT_HOVER}; }}
+
+#using {{ color: {MUTED}; font-size: 9pt; background: {BG}; border: 1px solid {BORDER};
+          border-radius: 8px; padding: 8px 10px; }}
+QCheckBox {{ spacing: 8px; color: {TEXT}; }}
+QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 5px; border: 1px solid #3a465c;
+                       background: {BG}; }}
+QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url({tick}); }}
 
 #chip {{ background: {CARD_2}; border: 1px solid {BORDER}; border-radius: 8px;
          padding: 5px 10px; color: {MUTED}; font-size: 9pt; }}

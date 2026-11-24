@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSpinBox, QVBoxLayout, QWidget,
 )
@@ -277,6 +277,9 @@ class MainWindow(QMainWindow):
         self.ed_keys.setPlaceholderText("Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
         self.ed_keys.setMinimumHeight(64); self.ed_keys.setMaximumHeight(90)
         self.btn_test = btn("⚡  Thử kết nối", "ghost")
+        self.chk_use = QCheckBox("Dùng nhà cung cấp này khi dịch")
+        self.chk_use.setCursor(Qt.PointingHandCursor)
+        self.lb_using = QLabel(); self.lb_using.setObjectName("using"); self.lb_using.setWordWrap(True)
         self.base_wrap = QWidget()
         bw = QVBoxLayout(self.base_wrap); bw.setContentsMargins(0, 0, 0, 0)
         bw.addLayout(field("Base URL", self.ed_base))
@@ -284,8 +287,9 @@ class MainWindow(QMainWindow):
         v1.addLayout(field("Mô hình", mrow))
         v1.addWidget(self.base_wrap)
         v1.addLayout(field("API key", self.ed_keys))
-        trow = QHBoxLayout(); trow.addWidget(self.btn_test); trow.addStretch(1)
+        trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_test)
         v1.addLayout(trow)
+        v1.addWidget(self.lb_using)
         v1.addStretch(1)
 
         # ===== thẻ 2: Phụ đề
@@ -398,6 +402,9 @@ class MainWindow(QMainWindow):
         self.btn_stop.clicked.connect(self._stop)
         self.btn_fmt.clicked.connect(self._check_format)
         self.btn_clear.clicked.connect(self.log_box.clear)
+        self.chk_use.toggled.connect(self._on_use_toggled)
+        self.ed_keys.textChanged.connect(self._refresh_using)
+        self.cb_model.currentTextChanged.connect(self._refresh_using)
 
         self._apply_cfg()
 
@@ -434,6 +441,7 @@ class MainWindow(QMainWindow):
         pc["keys"] = self.ed_keys.toPlainText().strip()
         pc["model"] = self.cb_model.currentText().strip()
         pc["base_url"] = self.ed_base.text().strip()
+        pc["enabled"] = self.chk_use.isChecked()
 
     def _save_cfg(self):
         self._save_provider_state(self.cb_provider.currentText())
@@ -447,11 +455,13 @@ class MainWindow(QMainWindow):
         CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
     _current_provider = None
+    _loading = False
 
     def _on_provider(self, name: str):
         if self._current_provider and self._current_provider != name:
             self._save_provider_state(self._current_provider)
         self._current_provider = name
+        self._loading = True
         p = PROVIDERS[name]
         pc = self.cfg.get("per_provider", {}).get(name, {})
         self.ed_keys.setPlainText(pc.get("keys", ""))
@@ -459,9 +469,14 @@ class MainWindow(QMainWindow):
         models = list(dict.fromkeys(pc.get("models_cache", []) or p["models"]))
         self.cb_model.addItems(models)
         self.cb_model.setCurrentText(pc.get("model") or (models[0] if models else ""))
+        self.chk_use.blockSignals(True)
+        self.chk_use.setChecked(bool(pc.get("enabled")))
+        self.chk_use.blockSignals(False)
         custom = not p["base_url"]
         self.base_wrap.setVisible(custom)
         self.ed_base.setText(pc.get("base_url", "") if custom else p["base_url"])
+        self._loading = False
+        self._refresh_using()
 
     # ---------- chọn file
     def _pick_input(self):
@@ -545,6 +560,53 @@ class MainWindow(QMainWindow):
         return [make_provider(self.cb_provider.currentText(), k, model, self.ed_base.text())
                 for k in (keys or [""])]
 
+    def _on_use_toggled(self, on: bool):
+        self._refresh_using()
+
+    def _sources(self) -> list[tuple[str, list[str], str, str]]:
+        """Các nguồn sẽ dùng khi dịch: [(tên, keys, model, base_url)].
+        Không bật nguồn nào -> chỉ dùng nhà cung cấp đang chọn."""
+        cur = self.cb_provider.currentText()
+        if cur:
+            self._save_provider_state(cur)
+        out = []
+        for name in PROVIDERS:
+            pc = self.cfg.get("per_provider", {}).get(name, {})
+            keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
+            if pc.get("enabled") and keys and pc.get("model"):
+                out.append((name, keys, pc["model"], pc.get("base_url", "")))
+        if not out and cur:
+            pc = self.cfg["per_provider"][cur]
+            keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
+            out.append((cur, keys, pc.get("model", ""), pc.get("base_url", "")))
+        return out
+
+    def _refresh_using(self, *_):
+        if not hasattr(self, "lb_using") or self._current_provider is None or self._loading:
+            return
+        src = self._sources()
+        any_enabled = any(pc.get("enabled") for pc in self.cfg.get("per_provider", {}).values())
+        parts = [f"<b>{n.split(' (')[0]}</b> ({len(k)} key)" for n, k, _, _ in src if k]
+        if not parts:
+            text = "Khi dịch: chưa có API key nào."
+        elif any_enabled:
+            text = "Khi dịch sẽ dùng cùng lúc: " + " · ".join(parts)
+        else:
+            text = "Khi dịch dùng: " + parts[0] + " — tick ô bên trên ở nhiều nhà cung cấp để dùng cùng lúc"
+        self.lb_using.setText(text)
+
+    def _make_translate_providers(self):
+        provs = []
+        for name, keys, model, base in self._sources():
+            if not keys:
+                raise ProviderError(f"{name}: chưa nhập API key")
+            if not model:
+                raise ProviderError(f"{name}: chưa chọn mô hình")
+            provs += [make_provider(name, k, model, base) for k in keys]
+        if not provs:
+            raise ProviderError("Chưa nhập API key")
+        return provs
+
     def _fetch_models(self):
         try:
             prov = self._make_providers(need_key=False)[0]
@@ -589,7 +651,7 @@ class MainWindow(QMainWindow):
         if not self.files:
             return QMessageBox.warning(self, "Thiếu file", "Chưa chọn file .srt")
         try:
-            providers = self._make_providers()
+            providers = self._make_translate_providers()
         except ProviderError as e:
             return QMessageBox.warning(self, "Lỗi", str(e))
         self._save_cfg()
@@ -598,6 +660,8 @@ class MainWindow(QMainWindow):
             threads=self.sp_threads.value(), batch_size=self.sp_batch.value(),
             rpm=self.sp_rpm.value(), custom_prompt=self._prompt_text(),
         )
+        names = sorted({p.label.split(" · ")[0] for p in providers})
+        self._log(f"Nguồn dịch: {', '.join(names)} — tổng {len(providers)} key")
         self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings)
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)

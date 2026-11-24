@@ -93,6 +93,7 @@ class Provider:
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
         self.session = requests.Session()
+        self.label = self.model
 
     def chat(self, system: str, user: str) -> str:  # pragma: no cover
         raise NotImplementedError
@@ -223,4 +224,7 @@ def make_provider(name: str, api_key: str, model: str, base_url: str | None = No
     if not url:
         raise ProviderError("Chưa nhập Base URL cho nhà cung cấp tùy chỉnh")
     cls = {"anthropic": AnthropicProvider, "vertex": VertexProvider}.get(cfg["kind"], OpenAICompatible)
-    return cls(api_key, model, url)
+    prov = cls(api_key, model, url)
+    tail = api_key.strip()[-4:] if api_key.strip() else "----"
+    prov.label = f"{name.split(' (')[0]} · {model} · key …{tail}"
+    return prov
