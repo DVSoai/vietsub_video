@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
 
         # ===== header
         title = QLabel("Subtitle Translator"); title.setObjectName("appTitle")
-        sub = QLabel("Dịch phụ đề .srt bằng AI — Gemini · Claude · OpenAI · DeepSeek · OpenRouter")
+        sub = QLabel("Dịch phụ đề .srt bằng AI — Gemini · Vertex · Claude · OpenAI · DeepSeek · OpenRouter")
         sub.setObjectName("appSub")
         tcol = QVBoxLayout(); tcol.setSpacing(2)
         tcol.addWidget(title); tcol.addWidget(sub)

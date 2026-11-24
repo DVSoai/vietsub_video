@@ -30,6 +30,11 @@ PROVIDERS: dict[str, dict] = {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "models": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
     },
+    "Vertex AI (API key)": {
+        "kind": "vertex",
+        "base_url": "https://aiplatform.googleapis.com/v1",
+        "models": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+    },
     "Claude (Anthropic)": {
         "kind": "anthropic",
         "base_url": "https://api.anthropic.com/v1",
@@ -167,10 +172,55 @@ class AnthropicProvider(Provider):
         return [m["id"] for m in resp.json().get("data", []) if m.get("id")]
 
 
+class VertexProvider(Provider):
+    """Vertex AI bằng API key (cả key chế độ Express): endpoint generateContent toàn cầu."""
+
+    SAFETY = [{"category": c, "threshold": "OFF"} for c in (
+        "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_SEXUALLY_EXPLICIT")]
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.use_safety = True  # phim đánh nhau dễ bị chặn nhầm -> tắt bộ lọc nếu được phép
+
+    def chat(self, system: str, user: str) -> str:
+        model = self.model.removeprefix("google/")
+        if not model.startswith("publishers/"):
+            model = f"publishers/google/models/{model}"
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {"temperature": self.temperature},
+        }
+        sent_safety = self.use_safety
+        if sent_safety:
+            body["safetySettings"] = self.SAFETY
+        resp = self._post(f"{self.base_url}/{model}:generateContent",
+                          params={"key": self.api_key}, json=body)
+        if resp.status_code == 400 and sent_safety and "safety" in resp.text.lower():
+            self.use_safety = False  # tài khoản không cho tắt bộ lọc -> gửi lại không kèm
+            raise RetryableError("Vertex không cho tắt bộ lọc an toàn, gửi lại với mặc định", 0.1)
+        _raise_for(resp)
+        data = resp.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            reason = (data.get("promptFeedback") or {}).get("blockReason", "không rõ")
+            raise RetryableError(f"Vertex chặn nội dung ({reason})")
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        if not text:
+            raise RetryableError(f"Vertex trả về rỗng (finishReason={cands[0].get('finishReason')})")
+        return text
+
+    def list_models(self) -> list[str]:
+        raise ProviderError("Vertex API key không có lệnh liệt kê model — hãy gõ tên model "
+                            "(vd: gemini-2.5-flash) vào ô Mô hình")
+
+
 def make_provider(name: str, api_key: str, model: str, base_url: str | None = None) -> Provider:
     cfg = PROVIDERS[name]
     url = (base_url or cfg["base_url"]).strip()
     if not url:
         raise ProviderError("Chưa nhập Base URL cho nhà cung cấp tùy chỉnh")
-    cls = AnthropicProvider if cfg["kind"] == "anthropic" else OpenAICompatible
+    cls = {"anthropic": AnthropicProvider, "vertex": VertexProvider}.get(cfg["kind"], OpenAICompatible)
     return cls(api_key, model, url)
