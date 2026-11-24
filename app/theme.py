@@ -130,13 +130,14 @@ QTableCornerButton::section {{ background: {CARD_2}; border: none; }}
 #chip {{ background: {CARD_2}; border: 1px solid {BORDER}; border-radius: 8px;
          padding: 5px 10px; color: {MUTED}; font-size: 9pt; }}
 
-QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {{
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background: {BG}; border: 1px solid {BORDER}; border-radius: 8px;
     padding: 7px 10px; selection-background-color: {ACCENT_DARK};
 }}
-QLineEdit, QComboBox, QSpinBox {{ min-height: 20px; }}
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QPlainTextEdit:hover {{ border-color: #36415a; }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {{ border-color: {ACCENT}; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ min-height: 20px; }}
+QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ color: #556070; }}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QPlainTextEdit:hover {{ border-color: #36415a; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{ border-color: {ACCENT}; }}
 QLineEdit:disabled {{ color: {MUTED}; background: {CARD}; }}
 QLineEdit[readOnly="true"] {{ color: {MUTED}; }}
 
@@ -149,10 +150,23 @@ QComboBox QAbstractItemView {{
 }}
 QComboBox QLineEdit {{ border: none; padding: 0; background: transparent; }}
 
-QSpinBox {{ padding-right: 24px; }}
-QSpinBox::up-button, QSpinBox::down-button {{ border: none; width: 22px; background: transparent; }}
-QSpinBox::up-arrow {{ image: url({up}); width: 12px; height: 12px; }}
-QSpinBox::down-arrow {{ image: url({down}); width: 12px; height: 12px; }}
+QSpinBox, QDoubleSpinBox {{ padding-right: 24px; }}
+QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    border: none; width: 22px; background: transparent; }}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url({up}); width: 12px; height: 12px; }}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url({down}); width: 12px; height: 12px; }}
+
+#nav {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
+QPushButton#navTab {{ background: transparent; border: none; border-radius: 9px; padding: 8px 16px;
+                      color: {MUTED}; font-weight: 600; }}
+QPushButton#navTab:hover {{ color: {TEXT}; background: {CARD_2}; }}
+QPushButton#navTab:checked {{ background: {ACCENT_DARK}; color: white; }}
+#preview {{ background: #05070a; border: 1px solid {BORDER}; border-radius: 10px; color: {MUTED}; }}
+QScrollArea#scroll, QScrollArea#scroll > QWidget > QWidget {{ background: transparent; }}
+QSlider::groove:horizontal {{ height: 6px; background: {BG}; border: 1px solid {BORDER}; border-radius: 3px; }}
+QSlider::sub-page:horizontal {{ background: {ACCENT_DARK}; border-radius: 3px; }}
+QSlider::handle:horizontal {{ background: {ACCENT}; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }}
+QColorDialog {{ background: {CARD}; }}
 
 QPushButton {{
     background: {CARD_2}; border: 1px solid {BORDER}; border-radius: 8px;

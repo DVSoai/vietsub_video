@@ -246,13 +246,23 @@ class Transcriber:
                     results[futs[f]] = f.result()
                     done += 1
                     self.progress(done, len(chunks))
-            cues: list[Cue] = []
-            for i, (start, _end) in enumerate(chunks):
-                for s, e, txt in results.get(i, []):
-                    cues.append(Cue(len(cues) + 1, _ts(start + s), _ts(start + e), txt))
-            return cues
+            return merge_chunks(chunks, results)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def merge_chunks(chunks: list[tuple[float, float]], results: dict[int, list]) -> list[Cue]:
+    """Ghép kết quả các đoạn thành phụ đề; sửa chồng thời gian ở chỗ nối giữa hai đoạn."""
+    segs = []
+    for i, (start, end) in enumerate(chunks):
+        for s, e, txt in results.get(i, []):
+            segs.append([start + s, min(start + e, end + 0.5), txt])
+    segs.sort(key=lambda x: x[0])
+    for a, b in zip(segs, segs[1:]):
+        if b[0] < a[1]:
+            a[1] = max(a[0] + 0.3, b[0] - 0.05)
+    return [Cue(i + 1, _ts(s), _ts(e), txt) for i, (s, e, txt) in enumerate(segs)]
+
 
 
 def _mmss(sec: float) -> str:

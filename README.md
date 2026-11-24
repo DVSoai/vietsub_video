@@ -54,6 +54,18 @@ Một số điều cần biết:
 - Thời gian do AI ước lượng, có thể lệch một chút; nên xem lại trong CapCut.
 - ffmpeg được cài kèm qua thư viện `imageio-ffmpeg`, không cần cài riêng.
 
+## Xuất video Vietsub (in phụ đề vào video)
+
+Bấm **2 · Xuất video Vietsub** ở đầu cửa sổ. Đây là chức năng riêng, tách khỏi phần dịch.
+
+1. **Video & phụ đề:** kéo thả video vào. App tự tìm file `ten-video.vi.srt` cùng tên (trong thư mục video hoặc thư mục lưu của phần dịch); bạn cũng có thể tự chọn file `.srt` khác.
+2. **Kiểu chữ:** chọn một kiểu có sẵn (Trắng viền đen, Vàng viền đen, Nền đen mờ, Trắng bóng mềm, Cổ trang vàng kim, Chữ to TikTok) rồi chỉnh tiếp: font, cỡ chữ, đậm/nghiêng, màu chữ, màu và độ dày viền, bóng đổ, nền hộp, vị trí trên/dưới, khoảng cách từ mép. Cỡ chữ và viền tính theo % chiều cao video, nên video 720p hay 1080p đều hiển thị giống nhau.
+3. **Che chữ có sẵn trong video:** chọn **Làm mờ** hoặc **Hộp màu**, rồi chỉnh mép trên, chiều cao và phần chừa hai bên cho khớp với chữ Trung in sẵn. Khung nét đứt xanh trên ảnh xem trước là vùng sẽ bị che. Bấm **Đặt phụ đề vào giữa vùng che** để phụ đề Việt nằm đúng chỗ chữ Trung cũ.
+4. **Xem trước:** kéo thanh thời gian hoặc bấm **Câu trước / Câu sau**. Mỗi lần đổi cài đặt, ảnh xem trước tự cập nhật sau khoảng nửa giây.
+5. **Xuất video:** chọn nén bằng CPU (x264, máy nào cũng chạy) hoặc card NVIDIA (NVENC, nhanh hơn), chọn chất lượng, rồi bấm **Xuất video**. Kết quả mặc định là `ten-video.vietsub.mp4`, âm thanh được giữ nguyên.
+
+Font: app liệt kê font trong Windows và trong thư mục `fonts` cạnh app. Thả thêm font kiểu CapCut vào `fonts`; nhớ chọn font có đủ dấu tiếng Việt. Khi xuất, app chép font đi kèm nên không phụ thuộc máy.
+
 ## Ghi chú
 
 - **Vertex AI:** chọn mục "Vertex AI (API key)", dán API key lấy ở Google Cloud console, mục APIs & Services > Credentials (key của chế độ Express cũng dùng được). Vertex không có lệnh liệt kê model bằng API key, nên bạn tự gõ tên model, ví dụ `gemini-2.5-flash`. App tự xin tắt bộ lọc an toàn để cảnh đánh nhau không bị chặn nhầm; nếu tài khoản không cho phép thì app tự gửi lại với bộ lọc mặc định. 
@@ -70,5 +82,7 @@ Một số điều cần biết:
 | `app/providers.py` | Gọi API: lớp chung cho chuẩn OpenAI và lớp riêng cho Claude |
 | `app/transcribe.py` | Tách tiếng bằng ffmpeg, cắt đoạn theo chỗ im lặng, cho Gemini trên Vertex nghe và chép lời |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
-| `app/gui.py` | Giao diện PySide6 |
+| `app/gui.py` | Giao diện PySide6 (khung chính, trang Dịch phụ đề) |
+| `app/render.py` | Xuất video: SRT → ASS (kiểu chữ), che chữ cứng (làm mờ / hộp), xem trước một khung hình, nén x264/NVENC |
+| `app/render_page.py` | Trang Xuất video Vietsub |
 | `app/theme.py` | Màu sắc, kiểu dáng (giao diện tối), icon app |

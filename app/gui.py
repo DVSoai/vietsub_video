@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QButtonGroup, QStackedWidget,
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QAbstractItemView, QHeaderView, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -300,7 +301,7 @@ class MainWindow(QMainWindow):
 
         # ===== header
         title = QLabel("Subtitle Translator"); title.setObjectName("appTitle")
-        sub = QLabel("Dịch phụ đề .srt bằng AI — Gemini · Vertex · Claude · OpenAI · DeepSeek · OpenRouter")
+        sub = QLabel("Dịch phụ đề bằng AI · In vietsub vào video")
         sub.setObjectName("appSub")
         tcol = QVBoxLayout(); tcol.setSpacing(2)
         tcol.addWidget(title); tcol.addWidget(sub)
@@ -308,8 +309,21 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         logo = QLabel(); logo.setPixmap(theme.app_icon().pixmap(44, 44))
         header.addWidget(logo); header.addSpacing(6)
-        header.addLayout(tcol, 1)
-        header.addWidget(self.pill, 0, Qt.AlignTop)
+        header.addLayout(tcol)
+        header.addSpacing(24)
+        # thanh chuyển chức năng
+        nav = QFrame(); nav.setObjectName("nav")
+        nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
+        self.nav_group = QButtonGroup(self)
+        self.nav_btns = []
+        for i, text in enumerate(("1 · Dịch phụ đề", "2 · Xuất video Vietsub")):
+            b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
+        self.nav_btns[0].setChecked(True)
+        header.addWidget(nav, 0, Qt.AlignVCenter)
+        header.addStretch(1)
+        header.addWidget(self.pill, 0, Qt.AlignVCenter)
 
         # ===== thẻ 1: Kết nối AI
         c1, v1 = card("Kết nối AI", "1")
@@ -497,10 +511,20 @@ class MainWindow(QMainWindow):
         self.settings_area = QWidget()
         self.settings_area.setLayout(cols)
         cols.setContentsMargins(0, 0, 0, 0)
+        page1 = QWidget()
+        p1 = QVBoxLayout(page1); p1.setContentsMargins(0, 0, 0, 0); p1.setSpacing(14)
+        p1.addWidget(self.settings_area, 1)
+        p1.addWidget(act)
+        self._root_v, self._act = p1, act
+
+        from .render_page import RenderPage
+        self.render_page = RenderPage(self.cfg, self._save_cfg, self._log, lambda: self.ed_output.text().strip())
+        self.stack = QStackedWidget()
+        self.stack.addWidget(page1)
+        self.stack.addWidget(self.render_page)
         v.addLayout(header)
-        v.addWidget(self.settings_area, 1)
-        v.addWidget(act)
-        self._root_v, self._act = v, act
+        v.addWidget(self.stack, 1)
+        self.nav_group.idClicked.connect(self._go_page)
         self.setCentralWidget(root)
 
         self.timer = QTimer(self)
@@ -569,7 +593,18 @@ class MainWindow(QMainWindow):
             pc["project"] = self.ed_project.text().strip()
             pc["location"] = self.cb_location.currentText().strip() or "global"
 
+    def _go_page(self, i: int):
+        self.stack.setCurrentIndex(i)
+        self.nav_btns[i].setChecked(True)
+        if i == 1 and not self.render_page.video:
+            vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
+                    {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
+            if vids:
+                self.render_page.set_video(vids[0])
+
     def _save_cfg(self):
+        if hasattr(self, "render_page"):
+            self.render_page.store_state()
         self._save_provider_state(self.cb_provider.currentText())
         self.cfg.update(
             provider=self.cb_provider.currentText(), output=self.ed_output.text(),
@@ -1023,6 +1058,11 @@ class MainWindow(QMainWindow):
             self.log_box.appendHtml(f'<span style="color:{color}; font-weight:{weight}">{safe}</span>')
 
     def closeEvent(self, e):
+        if self.render_page.busy() and QMessageBox.question(
+                self, "Đang xuất video", "Đang xuất video. Dừng và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
+        self.render_page.shutdown()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(5000)
