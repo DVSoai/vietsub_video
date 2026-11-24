@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from . import srt, theme
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
+from .transcribe import MEDIA_EXT, Transcriber, is_media
 from .translator import Settings, Stopped, Translator, needs_retranslation
 
 VERTEX_LOCATIONS = ["global", "us-central1", "asia-southeast1", "asia-northeast1", "asia-east1",
@@ -42,6 +43,11 @@ PROMPTS = DATA / "prompts"
 CONFIG = DATA / "settings.json"
 
 
+def source_srt_for(inp: str, out_dir: str, source_lang: str) -> str:
+    """File phụ đề gốc tạo ra từ video (vd: tap1.zh.srt)."""
+    return output_path_for(inp, out_dir, source_lang)
+
+
 def output_path_for(inp: str, out_dir: str, target_lang: str) -> str:
     p = Path(inp)
     folder = Path(out_dir) if out_dir else p.parent
@@ -55,11 +61,36 @@ class Worker(QThread):
     file_progress = Signal(int, int)
     done = Signal(str)
 
-    def __init__(self, mode, files, out_dir, providers, settings):
+    def __init__(self, mode, files, out_dir, providers, settings, only_transcribe=False):
         super().__init__()
         self.mode, self.files, self.out_dir = mode, files, out_dir
         self.providers, self.settings = providers, settings
+        self.only_transcribe = only_transcribe
         self.stop_event = threading.Event()
+
+    def _source_cues(self, path: str) -> list:
+        """Phụ đề gốc: đọc file .srt, hoặc nghe giọng từ video (có sẵn .zh.srt thì dùng lại)."""
+        if not is_media(path):
+            return srt.parse(srt.read_text(path))
+        src = source_srt_for(path, self.out_dir, self.settings.source_lang)
+        if os.path.exists(src) and (self.mode == "fix" or not self.only_transcribe):
+            if self.mode == "fix" or os.path.getmtime(src) >= os.path.getmtime(path):
+                self.log.emit(f"  Dùng lại phụ đề gốc đã nghe: {Path(src).name}")
+                return srt.parse(srt.read_text(src))
+        if self.mode == "fix":
+            return []
+        tc = Transcriber(self.providers, self.settings.source_lang, self.settings.custom_prompt,
+                         threads=min(self.settings.threads, 8), stop=self.stop_event,
+                         log=self.log.emit, progress=self.progress.emit)
+        cues = tc.run(path)
+        if self.stop_event.is_set():
+            raise Stopped()
+        if cues:
+            Path(src).parent.mkdir(parents=True, exist_ok=True)
+            with open(src, "w", encoding="utf-8-sig", newline="\r\n") as f:
+                f.write(srt.compose(cues))
+            self.log.emit(f"  ✔ Đã nghe xong {len(cues)} câu → {src}")
+        return cues
 
     def stop(self):
         self.stop_event.set()
@@ -75,9 +106,12 @@ class Worker(QThread):
                     break
                 self.file_progress.emit(fi, len(self.files))
                 self.log.emit(f"━━ [{fi}/{len(self.files)}] {Path(path).name}")
-                cues = srt.parse(srt.read_text(path))
+                cues = self._source_cues(path)
                 if not cues:
-                    self.log.emit("  ✖ Không đọc được phụ đề nào trong file")
+                    self.log.emit("  ✖ Không có câu phụ đề nào (file rỗng hoặc video không có lời thoại)")
+                    continue
+                if self.only_transcribe and is_media(path) and self.mode == "translate":
+                    ok += 1
                     continue
                 out = output_path_for(path, self.out_dir, self.settings.target_lang)
                 if self.mode == "translate":
@@ -194,17 +228,17 @@ class DropZone(QFrame):
         self.setObjectName("drop")
         self.setAcceptDrops(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumHeight(92)
+        self.setFixedHeight(84)
         h = QHBoxLayout(self)
         h.setContentsMargins(18, 12, 18, 12)
         h.setSpacing(14)
         icon = QLabel("⇪"); icon.setObjectName("dropIcon")
         h.addWidget(icon)
         col = QVBoxLayout(); col.setSpacing(2)
-        self.title = QLabel("Kéo thả file .srt vào đây"); self.title.setObjectName("dropTitle")
-        self.sub = QLabel("hoặc bấm để chọn — chọn nhiều file để dịch cả bộ phim")
+        self.title = QLabel("Kéo thả phụ đề .srt hoặc video vào đây"); self.title.setObjectName("dropTitle")
+        self.sub = QLabel("Video sẽ được nghe giọng bằng Vertex AI · chọn nhiều file cho cả bộ phim")
         self.sub.setObjectName("muted")
-        self.title.setWordWrap(True); self.sub.setWordWrap(True)
+        self.sub.setWordWrap(True)
         col.addWidget(self.title); col.addWidget(self.sub)
         h.addLayout(col, 1)
 
@@ -235,7 +269,8 @@ class DropZone(QFrame):
 
     def dropEvent(self, e):
         self._set_active(False)
-        files = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile().lower().endswith(".srt")]
+        files = [u.toLocalFile() for u in e.mimeData().urls()
+                 if u.toLocalFile().lower().endswith(".srt") or is_media(u.toLocalFile())]
         if files:
             self.files_dropped.emit(files)
 
@@ -332,7 +367,11 @@ class MainWindow(QMainWindow):
         prow.addWidget(self.cb_prompt, 1)
         for b in (self.btn_upload_prompt, self.btn_edit_prompt, self.btn_del_prompt):
             prow.addWidget(b)
+        self.chk_only_tc = QCheckBox("Video: chỉ tạo phụ đề gốc, không dịch")
+        self.chk_only_tc.setCursor(Qt.PointingHandCursor)
+        self.chk_only_tc.setMinimumHeight(24)
         v2.addWidget(self.drop)
+        v2.addWidget(self.chk_only_tc)
         v2.addLayout(field("Lưu vào thư mục", orow))
         v2.addLayout(lrow)
         v2.addLayout(field("Prompt riêng cho phim", prow,
@@ -356,7 +395,7 @@ class MainWindow(QMainWindow):
         v4.itemAt(0).layout().addWidget(self.btn_clear)
         self.log_box = QPlainTextEdit(); self.log_box.setObjectName("log")
         self.log_box.setReadOnly(True); self.log_box.setMaximumBlockCount(5000)
-        self.log_box.setMinimumHeight(120)
+        self.log_box.setMinimumHeight(96)
         self.log_box.setPlaceholderText("Nhật ký sẽ hiện ở đây…")
         v4.addWidget(self.log_box, 1)
 
@@ -513,7 +552,9 @@ class MainWindow(QMainWindow):
     # ---------- chọn file
     def _pick_input(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Chọn file phụ đề", self.cfg.get("last_dir", ""), "Phụ đề (*.srt);;Tất cả (*.*)")
+            self, "Chọn phụ đề hoặc video", self.cfg.get("last_dir", ""),
+            "Phụ đề / video (*.srt " + " ".join("*" + x for x in sorted(MEDIA_EXT)) + ");;"
+            "Phụ đề (*.srt);;Video / âm thanh (" + " ".join("*" + x for x in sorted(MEDIA_EXT)) + ");;Tất cả (*.*)")
         self._set_files(files)
 
     def _set_files(self, files: list[str]):
@@ -694,7 +735,7 @@ class MainWindow(QMainWindow):
     # ---------- chạy
     def _start(self, mode: str):
         if not self.files:
-            return QMessageBox.warning(self, "Thiếu file", "Chưa chọn file .srt")
+            return QMessageBox.warning(self, "Thiếu file", "Chưa chọn file .srt hoặc video")
         try:
             providers = self._make_translate_providers()
         except ProviderError as e:
@@ -707,7 +748,8 @@ class MainWindow(QMainWindow):
         )
         names = sorted({p.label.split(" · ")[0] for p in providers})
         self._log(f"Nguồn dịch: {', '.join(names)} — tổng {len(providers)} key")
-        self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings)
+        self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings,
+                             only_transcribe=self.chk_only_tc.isChecked())
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)
         self.worker.file_progress.connect(lambda i, n: self.lb_file.setText(f"File  {i}/{n}"))
@@ -763,7 +805,11 @@ class MainWindow(QMainWindow):
         bad = []
         for f in self.files:
             out = output_path_for(f, self.ed_output.text().strip(), target)
-            path = out if os.path.exists(out) else f
+            src = source_srt_for(f, self.ed_output.text().strip(), self.cb_source.currentText())
+            path = out if os.path.exists(out) else (src if is_media(f) else f)
+            if not os.path.exists(path):
+                self._log(f"Check format {Path(f).name}: chưa có file phụ đề")
+                continue
             errs = srt.check_format(srt.read_text(path))
             self._log(f"Check format {Path(path).name}: " + ("OK ✔" if not errs else f"{len(errs)} lỗi"))
             for e in errs[:20]:

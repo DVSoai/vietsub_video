@@ -33,6 +33,21 @@ Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator
 7. **Check dịch sót:** so file gốc với file đã dịch, tìm câu trống, câu còn chữ Hán/Nhật/Hàn hoặc câu giống hệt bản gốc, rồi chỉ dịch lại những câu đó.
 8. **Check format:** kiểm tra số thứ tự, timecode và dòng trống. Nếu có lỗi, app có thể tự sửa; file cũ được sao lưu thành `.bak`.
 
+## Tạo phụ đề từ video (nghe giọng bằng Vertex AI)
+
+Dùng cho phim không có file phụ đề riêng, ví dụ phim Bilibili có chữ in cứng vào hình.
+
+1. Bật Vertex AI (API key hoặc Service account JSON) và tick ô **Dùng nhà cung cấp này khi dịch**. Model nên dùng loại nghe được âm thanh, ví dụ `gemini-3.5-flash` hoặc `gemini-2.5-flash`.
+2. Kéo thả **video** (`.mp4 .mkv .flv .mov .webm…`) hoặc file âm thanh vào ô Phụ đề.
+3. Bấm **Bắt đầu dịch**. App tách tiếng, cắt thành các đoạn khoảng 2 phút (cắt ở chỗ im lặng), rồi cho Gemini nghe song song. Kết quả ghi ra `ten-video.zh.srt`, sau đó app dịch tiếp ra `ten-video.vi.srt`.
+4. Tick **Video: chỉ tạo phụ đề gốc, không dịch** nếu chỉ muốn lấy phụ đề tiếng Trung.
+
+Một số điều cần biết:
+- Prompt riêng của phim (tên nhân vật, thuật ngữ) cũng được gửi kèm ở bước nghe, nên tên riêng ít bị nghe nhầm hơn.
+- Nếu đã có `.zh.srt` thì lần chạy sau app dùng lại file đó, không nghe lại (không tốn tiền). Muốn nghe lại thì xóa file `.zh.srt`.
+- Thời gian do AI ước lượng, có thể lệch một chút; nên xem lại trong CapCut.
+- ffmpeg được cài kèm qua thư viện `imageio-ffmpeg`, không cần cài riêng.
+
 ## Ghi chú
 
 - **Vertex AI:** chọn mục "Vertex AI (API key)", dán API key lấy ở Google Cloud console, mục APIs & Services > Credentials (key của chế độ Express cũng dùng được). Vertex không có lệnh liệt kê model bằng API key, nên bạn tự gõ tên model, ví dụ `gemini-2.5-flash`. App tự xin tắt bộ lọc an toàn để cảnh đánh nhau không bị chặn nhầm; nếu tài khoản không cho phép thì app tự gửi lại với bộ lọc mặc định. 
@@ -47,6 +62,7 @@ Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator
 |---|---|
 | `app/srt.py` | Đọc SRT (tự nhận UTF-8, UTF-16, GB18030, Big5…), ghi SRT, kiểm tra format |
 | `app/providers.py` | Gọi API: lớp chung cho chuẩn OpenAI và lớp riêng cho Claude |
+| `app/transcribe.py` | Tách tiếng bằng ffmpeg, cắt đoạn theo chỗ im lặng, cho Gemini trên Vertex nghe và chép lời |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
 | `app/gui.py` | Giao diện PySide6 |
 | `app/theme.py` | Màu sắc, kiểu dáng (giao diện tối), icon app |

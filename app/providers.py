@@ -200,19 +200,28 @@ class VertexProvider(Provider):
         return {"key": self.api_key}, {}
 
     def chat(self, system: str, user: str) -> str:
+        return self.generate([{"text": user}], system=system)
+
+    def generate(self, parts: list[dict], system: str = "", json_mode: bool = False,
+                 timeout: int = 300) -> str:
+        """Gửi nhiều phần (chữ, âm thanh inlineData...) -> chữ trả về."""
         model = self.model.removeprefix("google/")
         if not model.startswith("publishers/"):
             model = f"publishers/google/models/{model}"
         params, headers = self._auth()
+        cfg = {"temperature": self.temperature}
+        if json_mode:
+            cfg["responseMimeType"] = "application/json"
         body = {
-            "systemInstruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"temperature": self.temperature},
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": cfg,
         }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         sent_safety = self.use_safety
         if sent_safety:
             body["safetySettings"] = self.SAFETY
-        resp = self._post(self._url(model), params=params, headers=headers, json=body)
+        resp = self._post(self._url(model), params=params, headers=headers, json=body)  # noqa
         if resp.status_code == 400 and sent_safety and "safety" in resp.text.lower():
             self.use_safety = False  # tài khoản không cho tắt bộ lọc -> gửi lại không kèm
             raise RetryableError("Vertex không cho tắt bộ lọc an toàn, gửi lại với mặc định", 0.1)
@@ -300,9 +309,9 @@ class VertexSAProvider(VertexProvider):
     def _auth(self):
         return {}, {"Authorization": f"Bearer {self.tokens.token()}"}
 
-    def chat(self, system: str, user: str) -> str:
+    def generate(self, *a, **kw) -> str:
         try:
-            return super().chat(system, user)
+            return super().generate(*a, **kw)
         except ProviderError as e:
             if "404" in str(e)[:12] and self.location != "global":
                 raise ProviderError(f"{e}\n→ Model này không có ở vùng {self.location}. "
