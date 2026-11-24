@@ -288,7 +288,7 @@ class VertexSAProvider(VertexProvider):
         super().__init__(json_path, model, base_url)
         self.tokens = _SATokens.get(self.api_key)
         self.project = project.strip() or self.tokens.info.get("project_id", "")
-        self.location = (location or "us-central1").strip()
+        self.location = (location or "global").strip()
         if not self.project:
             raise ProviderError("Chưa có Project ID (file JSON cũng không ghi project_id)")
         if not base_url:
@@ -299,6 +299,15 @@ class VertexSAProvider(VertexProvider):
 
     def _auth(self):
         return {}, {"Authorization": f"Bearer {self.tokens.token()}"}
+
+    def chat(self, system: str, user: str) -> str:
+        try:
+            return super().chat(system, user)
+        except ProviderError as e:
+            if "404" in str(e)[:12] and self.location != "global":
+                raise ProviderError(f"{e}\n→ Model này không có ở vùng {self.location}. "
+                                    "Thử đổi Location sang 'global'.") from e
+            raise
 
     def list_models(self) -> list[str]:
         raise ProviderError("Hãy gõ tên model Gemini (vd: gemini-2.5-flash) vào ô Mô hình")

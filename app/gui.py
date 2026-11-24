@@ -21,7 +21,7 @@ from . import srt, theme
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .translator import Settings, Stopped, Translator, needs_retranslation
 
-VERTEX_LOCATIONS = ["us-central1", "global", "asia-southeast1", "asia-northeast1", "asia-east1",
+VERTEX_LOCATIONS = ["global", "us-central1", "asia-southeast1", "asia-northeast1", "asia-east1",
                     "us-east4", "us-west1", "europe-west1", "europe-west4"]
 LANGS = ["Tiếng Trung", "Tiếng Việt", "Tiếng Anh", "Tiếng Nhật", "Tiếng Hàn", "Tiếng Thái",
          "Tiếng Indonesia", "Tiếng Pháp", "Tiếng Tây Ban Nha", "Tiếng Nga"]
@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
         pc["enabled"] = self.chk_use.isChecked()
         if PROVIDERS[name]["kind"] == "vertex_sa":
             pc["project"] = self.ed_project.text().strip()
-            pc["location"] = self.cb_location.currentText().strip() or "us-central1"
+            pc["location"] = self.cb_location.currentText().strip() or "global"
 
     def _save_cfg(self):
         self._save_provider_state(self.cb_provider.currentText())
@@ -501,7 +501,7 @@ class MainWindow(QMainWindow):
             "Bấm “Chọn file JSON…” (vd: vertex.json)\nNhiều file: mỗi dòng một đường dẫn" if sa else
             "Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
         self.ed_project.setText(pc.get("project", ""))
-        self.cb_location.setCurrentText(pc.get("location", "us-central1"))
+        self.cb_location.setCurrentText(pc.get("location", "global"))
         custom = not p["base_url"] and not sa
         self.base_wrap.setVisible(custom)
         self.ed_base.setText(pc.get("base_url", "") if custom else p["base_url"])
