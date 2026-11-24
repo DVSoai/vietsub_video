@@ -205,7 +205,7 @@ class Translator:
                 rng = f"{len(ks)} câu: " + ", ".join(ks[:4]) + ("…" if len(ks) > 4 else "")
             jid = f"{phase}-{i}-{id(b)}"
             jids.append(jid)
-            disp = "Batch" if phase == "Dịch" else "Batch bù"
+            disp = "Batch bù" if phase.startswith("Bù") else "Batch"
             self._job(jid, "queued", name=f"{disp} {i}/{len(batches)} · {rng}", info="đang chờ luồng trống")
         total = total or len(batches)
         out: dict[str, str] = {}
