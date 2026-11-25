@@ -80,6 +80,21 @@ Một số điều cần biết:
 - Thời gian do AI ước lượng, có thể lệch một chút; nên xem lại trong CapCut.
 - ffmpeg được cài kèm qua thư viện `imageio-ffmpeg`, không cần cài riêng.
 
+## Lồng tiếng Việt (VieNeu-TTS, chạy trên máy, miễn phí)
+
+Tab **3 · Lồng tiếng** biến video tiếng Trung thành video nói tiếng Việt:
+
+1. **Tách giọng**: model UVR MDX-Net (tự tải ~65 MB lần đầu vào `data/models`) tách lời thoại khỏi nhạc nền và tiếng động.
+2. **Nghe giọng**: Gemini/Vertex nghe phần giọng đã tách, ghi lại từng câu kèm người nói, giới tính, cảm xúc (`.zh.srt`). Nếu đã có `.zh.srt` cùng tên thì dùng luôn.
+3. **Dịch lồng tiếng**: dịch ngắn gọn vừa thời lượng câu nói (khoảng 4–5 tiếng/giây).
+4. **Nhân vật & giọng**: AI gom câu theo nhân vật, app tự chọn giọng VieNeu hợp giới tính. App **dừng ở đây** để bạn nghe thử, đổi giọng, sửa câu.
+5. **Đọc giọng & trộn**: VieNeu-TTS đọc từng câu, câu dài được đọc nhanh lên (tối đa 1.35x), rồi trộn với nhạc nền (bỏ hẳn giọng gốc) hoặc giữ tiếng gốc vặn nhỏ kiểu thuyết minh.
+6. Xuất `ten_video.long_tieng.mp4` và `ten_video.vi.dub.m4a`. Ở tab 4 chọn **Âm thanh: Tiếng lồng** để vừa in phụ đề vừa có giọng Việt.
+
+Cài đặt: máy có card NVIDIA chạy `cai_long_tieng_gpu.bat` (PyTorch CUDA 12.8, hợp RTX 50-series); máy không có card chạy `cai_long_tieng_cpu.bat` (chậm hơn nhiều). Lần đầu đọc giọng, VieNeu tự tải model từ Hugging Face. Mọi file trung gian nằm trong thư mục `ten_video_long_tieng/` cạnh video; câu đã đọc được lưu lại nên sửa một câu chỉ đọc lại câu đó.
+
+VieNeu-TTS dùng giấy phép Apache 2.0 nên dùng được cho kênh có kiếm tiền. App chỉ dùng giọng có sẵn của VieNeu, không nhái giọng diễn viên gốc.
+
 ## Xuất video Vietsub (in phụ đề vào video)
 
 Bấm **2 · Xuất video Vietsub** ở đầu cửa sổ. Đây là chức năng riêng, tách khỏi phần dịch.

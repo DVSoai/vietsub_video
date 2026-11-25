@@ -260,7 +260,10 @@ class RenderPage(QWidget):
         orow = QHBoxLayout(); orow.setSpacing(8); orow.addWidget(self.ed_out, 1); orow.addWidget(self.btn_out)
         e1 = QHBoxLayout(); e1.setSpacing(12)
         e1.addLayout(_field("Nén bằng", self.cb_enc), 3); e1.addLayout(_field("Chất lượng", self.cb_quality), 2)
-        v4.addLayout(e1); v4.addLayout(_field("Lưu thành", orow))
+        self.cb_audio = QComboBox(); self.cb_audio.addItems(["Tiếng gốc của video", "Tiếng lồng (giọng Việt)"])
+        v4.addLayout(e1)
+        v4.addLayout(_field("Âm thanh", self.cb_audio, "Tiếng lồng lấy từ file .vi.dub.m4a do tab Lồng tiếng tạo"))
+        v4.addLayout(_field("Lưu thành", orow))
 
         for c in (c1, c2, c3, c4):
             lv.addWidget(c)
@@ -353,9 +356,17 @@ class RenderPage(QWidget):
                      blur=self.sp_blur.value(), box_color=self.col_cover.color,
                      box_opacity=self.sp_cover_op.value())
 
+    def dub_audio(self) -> str:
+        if not self.video:
+            return ""
+        p = Path(self.video)
+        f = p.with_name(p.stem + ".vi.dub.m4a")
+        return str(f) if f.exists() else ""
+
     def _opts(self) -> ExportOpts:
         crf = [18, 20, 23][self.cb_quality.currentIndex()]
-        return ExportOpts(encoder="nvenc" if self.cb_enc.currentIndex() == 1 else "x264", crf=crf)
+        audio = self.dub_audio() if self.cb_audio.currentIndex() == 1 else ""
+        return ExportOpts(encoder="nvenc" if self.cb_enc.currentIndex() == 1 else "x264", crf=crf, audio_file=audio)
 
     def _set_style(self, st: SubStyle):
         self._loading = True
@@ -467,6 +478,9 @@ class RenderPage(QWidget):
         if sub:
             self.set_sub(sub)
         self.ed_out.setText(str(Path(path).with_name(Path(path).stem + ".vietsub.mp4")))
+        has_dub = bool(self.dub_audio())
+        self.cb_audio.model().item(1).setEnabled(has_dub)
+        self.cb_audio.setCurrentIndex(1 if has_dub else 0)
         self._state(f"Video {self.info['w']}×{self.info['h']}, dài {_fmt(dur)}"
                     + ("" if self.info["has_audio"] else " (không có tiếng)"))
         if self.cues:

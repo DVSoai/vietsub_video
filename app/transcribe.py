@@ -92,7 +92,7 @@ def cut_chunk(wav: str, start: float, end: float, dst: str) -> bytes:
     return open(dst, "rb").read()
 
 
-def build_prompt(lang: str, hints: str) -> str:
+def build_prompt(lang: str, hints: str, speakers: bool = False) -> str:
     p = (
         f"Đây là một đoạn âm thanh trong phim, ngôn ngữ nói: {lang}.\n"
         "Hãy CHÉP LẠI NGUYÊN VĂN lời thoại (không dịch), chia thành từng câu phụ đề ngắn "
@@ -105,6 +105,10 @@ def build_prompt(lang: str, hints: str) -> str:
     )
     if lang == "Tiếng Trung":
         p += " Dùng chữ Hán giản thể."
+    if speakers:
+        p += ("\nThêm cho mỗi câu: \"g\": giới tính người nói (\"nam\" hoặc \"nữ\"), "
+              "\"spk\": nhãn người nói ngắn, nhất quán trong đoạn (tên nếu nghe thấy được gọi, nếu không thì "
+              "\"Nam 1\", \"Nữ 1\", \"Người dẫn chuyện\"...), \"emo\": cảm xúc 1-2 từ tiếng Việt.")
     if hints.strip():
         p += "\n\nTên riêng / thuật ngữ có thể xuất hiện (viết đúng như sau):\n" + hints.strip()
     return p
@@ -129,17 +133,18 @@ def parse_segments(text: str, length: float) -> list[tuple[float, float, str]]:
             continue  # thời gian nằm ngoài đoạn -> AI đoán sai, bỏ
         s = max(0.0, s)
         e = min(max(s + 0.4, e if e is not None else s + 2), length + 0.5)
-        segs.append((s, e, txt))
+        meta = {k: str(it[k]).strip() for k in ("g", "spk", "emo") if it.get(k)}
+        segs.append((s, e, txt, meta))
     segs.sort(key=lambda x: x[0])
     # không cho chồng lên nhau, câu tối thiểu 0.6s, tối đa 8s
     out = []
-    for i, (s, e, txt) in enumerate(segs):
+    for i, (s, e, txt, meta) in enumerate(segs):
         if out and s < out[-1][1]:
-            ps, pe, pt = out[-1]
-            out[-1] = (ps, max(ps + 0.3, s - 0.05), pt)
+            ps, pe, pt, pm = out[-1]
+            out[-1] = (ps, max(ps + 0.3, s - 0.05), pt, pm)
         nxt = segs[i + 1][0] if i + 1 < len(segs) else length + 0.5
         e = min(max(e, s + 0.6), s + 8.0, max(s + 0.3, nxt - 0.05))
-        out.append((s, e, txt))
+        out.append((s, e, txt, meta))
     return out
 
 
@@ -170,6 +175,7 @@ class Transcriber:
     progress: callable = lambda done, total: None
     event: callable = lambda e: None
     max_retries: int = 4
+    speakers: bool = False
 
     def __post_init__(self):
         self.providers = [p for p in self.providers if isinstance(p, VertexProvider)]
@@ -190,7 +196,7 @@ class Transcriber:
         self.event({"type": "job", "id": f"nghe-{idx}", "state": state, **kw})
 
     def _one(self, idx: int, audio: bytes, length: float) -> list[tuple[float, float, str]]:
-        prompt = build_prompt(self.lang, self.hints)
+        prompt = build_prompt(self.lang, self.hints, self.speakers)
         last = ""
         for attempt in range(1, self.max_retries + 1):
             if self.stop.is_set():
@@ -255,13 +261,22 @@ def merge_chunks(chunks: list[tuple[float, float]], results: dict[int, list]) ->
     """Ghép kết quả các đoạn thành phụ đề; sửa chồng thời gian ở chỗ nối giữa hai đoạn."""
     segs = []
     for i, (start, end) in enumerate(chunks):
-        for s, e, txt in results.get(i, []):
-            segs.append([start + s, min(start + e, end + 0.5), txt])
+        for item in results.get(i, []):
+            s, e, txt = item[:3]
+            meta = dict(item[3]) if len(item) > 3 else {}
+            if meta.get("spk"):
+                meta["spk_chunk"] = i   # nhãn người nói chỉ nhất quán trong 1 đoạn
+            segs.append([start + s, min(start + e, end + 0.5), txt, meta])
     segs.sort(key=lambda x: x[0])
     for a, b in zip(segs, segs[1:]):
         if b[0] < a[1]:
             a[1] = max(a[0] + 0.3, b[0] - 0.05)
-    return [Cue(i + 1, _ts(s), _ts(e), txt) for i, (s, e, txt) in enumerate(segs)]
+    cues = []
+    for i, (s, e, txt, meta) in enumerate(segs):
+        c = Cue(i + 1, _ts(s), _ts(e), txt)
+        c.meta = meta  # type: ignore[attr-defined]
+        cues.append(c)
+    return cues
 
 
 

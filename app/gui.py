@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Xuất video Vietsub")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
@@ -524,7 +524,11 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.search_page)   # 0 · Tìm & tải phim
         self.stack.addWidget(page1)              # 1 · Dịch phụ đề
-        self.stack.addWidget(self.render_page)   # 2 · Xuất video Vietsub
+        from .dub_page import DubPage
+        self.dub_page = DubPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers,
+                                lambda: self.ed_output.text().strip())
+        self.stack.addWidget(self.dub_page)      # 2 · Lồng tiếng
+        self.stack.addWidget(self.render_page)   # 3 · Xuất video Vietsub
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -602,7 +606,11 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
         self.cfg["page"] = i
-        if i == 2 and not self.render_page.video:
+        media_vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
+                      {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
+        if i == 2 and not self.dub_page.video and media_vids:
+            self.dub_page.set_video(media_vids[0])
+        if i == 3 and not self.render_page.video:
             vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
                     {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
             if vids:
@@ -613,6 +621,8 @@ class MainWindow(QMainWindow):
             self.render_page.store_state()
         if hasattr(self, "search_page"):
             self.search_page.store_state()
+        if hasattr(self, "dub_page"):
+            self.dub_page.store_state()
         self._save_provider_state(self.cb_provider.currentText())
         self.cfg.update(
             provider=self.cb_provider.currentText(), output=self.ed_output.text(),
@@ -1074,8 +1084,13 @@ class MainWindow(QMainWindow):
                 self, "Đang tải phim", "Vẫn còn phim đang tải. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
+        if self.dub_page.busy() and QMessageBox.question(
+                self, "Đang lồng tiếng", "Đang lồng tiếng. Dừng và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
         self.render_page.shutdown()
         self.search_page.shutdown()
+        self.dub_page.shutdown()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(5000)

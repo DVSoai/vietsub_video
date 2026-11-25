@@ -69,6 +69,7 @@ class ExportOpts:
     crf: int = 20                # chất lượng (thấp = đẹp hơn, nặng hơn)
     preset: str = "veryfast"
     audio_copy: bool = True
+    audio_file: str = ""         # file tiếng thay thế (vd: tiếng lồng .vi.dub.m4a); rỗng = tiếng gốc
 
 
 # ------------------------------------------------------------------ tiện ích ffmpeg
@@ -328,16 +329,21 @@ class Exporter:
             graph = filter_graph(info, self.cover, with_subs=True)
             out_abs = os.path.abspath(self.out)
             Path(out_abs).parent.mkdir(parents=True, exist_ok=True)
-            tries = [self.opts.audio_copy, False] if info["has_audio"] else [False]
+            ext_audio = self.opts.audio_file and os.path.exists(self.opts.audio_file)
+            tries = [self.opts.audio_copy, False] if (info["has_audio"] or ext_audio) else [False]
             for copy_audio in dict.fromkeys(tries):
-                audio = (["-map", "0:a:0?", "-c:a", "copy"] if copy_audio else
-                         ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"])
-                args = [ffmpeg_exe(), "-hide_banner", "-y", "-i", os.path.abspath(self.video),
+                src = "1:a:0" if ext_audio else "0:a:0?"
+                audio = (["-map", src, "-c:a", "copy"] if copy_audio else
+                         ["-map", src, "-c:a", "aac", "-b:a", "192k"])
+                extra_in = ["-i", os.path.abspath(self.opts.audio_file)] if ext_audio else []
+                args = [ffmpeg_exe(), "-hide_banner", "-y", "-i", os.path.abspath(self.video), *extra_in,
                         "-filter_complex", graph, "-map", "[v]", *self._vcodec(), *audio,
+                        *(["-shortest"] if ext_audio else []),
                         "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_abs]
                 self.log(f"  ffmpeg: {info['w']}x{info['h']}, {info['duration']:.0f}s, "
                          f"{'NVENC' if self.opts.encoder == 'nvenc' else 'x264 ' + self.opts.preset}"
-                         f", âm thanh {'giữ nguyên' if copy_audio else 'nén lại AAC'}")
+                         f", âm thanh {'lồng tiếng' if ext_audio else 'gốc'} "
+                         f"{'(giữ nguyên)' if copy_audio else '(nén lại AAC)'}")
                 code, err = self._exec(args, tmp, info["duration"])
                 if self.stopped.is_set():
                     return "stopped"

@@ -25,6 +25,7 @@ class Settings:
     rpm: int = 0  # 0 = không giới hạn
     max_retries: int = 5
     custom_prompt: str = ""
+    dub_durations: dict = None  # {id: giây} -> dịch kiểu lồng tiếng (vừa thời lượng nói)
 
 
 class Stopped(Exception):
@@ -62,6 +63,12 @@ def build_system_prompt(s: Settings) -> str:
         "- Đầu vào là một JSON object {\"id\": \"câu gốc\"}. Chỉ trả về một JSON object "
         "có ĐÚNG các id đó, giá trị là câu đã dịch. Không giải thích, không markdown."
     )
+    if s.dub_durations:
+        base += ("\n\nBẢN DỊCH DÙNG ĐỂ LỒNG TIẾNG (đọc thành giọng nói):\n"
+                 "- Mỗi câu gốc có ghi chú thời lượng dạng ⟪2.4s⟫ ở cuối: câu dịch phải ĐỌC KỊP trong thời gian đó "
+                 "(khoảng 4–5 âm tiết tiếng Việt mỗi giây). Câu ngắn thì dịch ngắn, rút gọn ý phụ, bỏ từ thừa.\n"
+                 "- Văn nói tự nhiên, dễ đọc thành tiếng; không dùng ký hiệu, ngoặc, chú thích.\n"
+                 "- KHÔNG đưa ghi chú ⟪…s⟫ vào bản dịch.")
     if s.custom_prompt.strip():
         base += "\n\nHướng dẫn riêng cho phim này (ưu tiên làm theo):\n" + s.custom_prompt.strip()
     return base
@@ -143,7 +150,9 @@ class Translator:
         self.cb.event({"type": "job", "id": jid, "state": state, **kw})
 
     def _translate_batch(self, items: dict[str, str], jid: str = "") -> dict[str, str]:
-        user = json.dumps(items, ensure_ascii=False)
+        durs = self.settings.dub_durations or {}
+        send = {k: (f"{v} ⟪{float(durs[k]):.1f}s⟫" if k in durs else v) for k, v in items.items()}
+        user = json.dumps(send, ensure_ascii=False)
         last_err = None
         for attempt in range(1, self.settings.max_retries + 1):
             if self.stop.is_set():
@@ -157,7 +166,7 @@ class Translator:
             try:
                 reply = prov.chat(self.system, user)
                 result = parse_json_reply(reply)
-                got = {k: result[k] for k in items if k in result}
+                got = {k: re.sub(r"\s*⟪[^⟫]*⟫\s*", " ", result[k]).strip() for k in items if k in result}
                 if len(got) >= max(1, int(len(items) * 0.5)):
                     self._job(jid, "done", info=f"nhận {len(got)}/{len(items)} câu")
                     return got  # thiếu vài câu thì để vòng dịch bù xử lý
