@@ -156,6 +156,29 @@ QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSp
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url({up}); width: 12px; height: 12px; }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url({down}); width: 12px; height: 12px; }}
 
+#videoCard {{ background: {CARD_2}; border: 1px solid {BORDER}; border-radius: 12px; }}
+#videoCard:hover {{ border-color: {ACCENT_DARK}; }}
+#thumb {{ background: #05070a; border-top-left-radius: 12px; border-top-right-radius: 12px; color: {MUTED}; }}
+#badge {{ background: rgba(0,0,0,0.72); color: white; border-radius: 5px; padding: 2px 6px;
+          font-size: 8.5pt; font-weight: 600; }}
+#cardVi {{ font-weight: 600; font-size: 9.5pt; }}
+QPushButton#small {{ background: {ACCENT}; color: #04150f; border: none; border-radius: 7px;
+                     padding: 5px 12px; font-weight: 700; min-height: 16px; }}
+QPushButton#small:hover {{ background: {ACCENT_HOVER}; }}
+QPushButton#chipBtn {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 13px; padding: 4px 12px;
+                       color: {TEXT}; font-weight: 500; min-height: 14px; }}
+QPushButton#chipBtn:hover {{ border-color: {ACCENT}; color: {ACCENT_HOVER}; }}
+#searchBox {{ font-size: 11pt; padding: 9px 12px; }}
+#jobRow {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 10px; }}
+#jobTitle {{ font-weight: 600; }}
+#jobRow QProgressBar {{ border-radius: 3px; }}
+#jobRow QProgressBar::chunk {{ border-radius: 2px; }}
+#gridHost {{ background: transparent; }}
+QListWidget#partList {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; }}
+QListWidget#partList::item {{ padding: 6px 4px; }}
+QListWidget#partList::indicator {{ width: 16px; height: 16px; }}
+QDialog {{ background: {CARD}; }}
+
 #nav {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
 QPushButton#navTab {{ background: transparent; border: none; border-radius: 9px; padding: 8px 16px;
                       color: {MUTED}; font-weight: 600; }}

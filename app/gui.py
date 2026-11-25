@@ -316,11 +316,11 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Dịch phụ đề", "2 · Xuất video Vietsub")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Xuất video Vietsub")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
-        self.nav_btns[0].setChecked(True)
+        self.nav_btns[1].setChecked(True)
         header.addWidget(nav, 0, Qt.AlignVCenter)
         header.addStretch(1)
         header.addWidget(self.pill, 0, Qt.AlignVCenter)
@@ -519,9 +519,13 @@ class MainWindow(QMainWindow):
 
         from .render_page import RenderPage
         self.render_page = RenderPage(self.cfg, self._save_cfg, self._log, lambda: self.ed_output.text().strip())
+        from .search_page import SearchPage
+        self.search_page = SearchPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers)
         self.stack = QStackedWidget()
-        self.stack.addWidget(page1)
-        self.stack.addWidget(self.render_page)
+        self.stack.addWidget(self.search_page)   # 0 · Tìm & tải phim
+        self.stack.addWidget(page1)              # 1 · Dịch phụ đề
+        self.stack.addWidget(self.render_page)   # 2 · Xuất video Vietsub
+        self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
         self.nav_group.idClicked.connect(self._go_page)
@@ -553,6 +557,7 @@ class MainWindow(QMainWindow):
         self.cb_model.currentTextChanged.connect(self._refresh_using)
 
         self._apply_cfg()
+        self._go_page(int(self.cfg.get("page", 1)) if str(self.cfg.get("page", 1)).isdigit() else 1)
 
     def _set_pill(self, text: str, state: str = ""):
         self.pill.setText(f"●  {text}")
@@ -596,7 +601,8 @@ class MainWindow(QMainWindow):
     def _go_page(self, i: int):
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
-        if i == 1 and not self.render_page.video:
+        self.cfg["page"] = i
+        if i == 2 and not self.render_page.video:
             vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
                     {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
             if vids:
@@ -605,6 +611,8 @@ class MainWindow(QMainWindow):
     def _save_cfg(self):
         if hasattr(self, "render_page"):
             self.render_page.store_state()
+        if hasattr(self, "search_page"):
+            self.search_page.store_state()
         self._save_provider_state(self.cb_provider.currentText())
         self.cfg.update(
             provider=self.cb_provider.currentText(), output=self.ed_output.text(),
@@ -1062,7 +1070,12 @@ class MainWindow(QMainWindow):
                 self, "Đang xuất video", "Đang xuất video. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
+        if self.search_page.busy() and QMessageBox.question(
+                self, "Đang tải phim", "Vẫn còn phim đang tải. Dừng và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
         self.render_page.shutdown()
+        self.search_page.shutdown()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(5000)

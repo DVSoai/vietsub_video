@@ -15,7 +15,22 @@ App desktop dịch phụ đề `.srt` bằng AI (Gemini, Vertex AI, Claude, Open
 
 Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator.exe`. Có thể copy file này đi bất kỳ đâu. Cấu hình và prompt được lưu trong thư mục `data\` nằm cạnh file exe.
 
-## Dùng
+## Tìm & tải phim (Bilibili)
+
+Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoản Bilibili.
+
+1. Gõ từ khóa tiếng Trung, ví dụ `仙侠短剧`, hoặc bấm một gợi ý có sẵn. Nếu chỉ biết tiếng Việt thì gõ tiếng Việt (ví dụ "phim tu tiên ngắn") rồi bấm **VI→中**: AI sẽ đổi sang từ khóa tiếng Trung và tìm luôn.
+2. Lọc theo **sắp xếp** (liên quan nhất, xem nhiều, mới đăng…) và **thời lượng**. Bấm Trang trước / Trang sau để xem thêm (tối đa 50 trang, mỗi trang 20 video).
+3. Tick **Dịch tiêu đề sang tiếng Việt** để AI dịch tiêu đề. Ô này dùng nhà cung cấp AI đã cài ở tab Dịch phụ đề.
+4. Bấm **⬇ Tải** ở video muốn tải. Video nhiều tập (P1, P2… hoặc tuyển tập) sẽ hiện hộp thoại để chọn tập. Các tập của một bộ phim được lưu chung vào một thư mục riêng.
+5. Hàng chờ bên phải tải lần lượt từng phim, có tốc độ và thời gian còn lại. File lưu thành `.mp4`, tên file là tên đang hiển thị trong app.
+
+Lưu ý:
+- Khi không đăng nhập, Bilibili thường chỉ cho tải chất lượng khoảng **360p–480p**.
+- Việc tải dùng `yt-dlp`. `run.bat` tự cập nhật `yt-dlp` mỗi lần chạy, vì Bilibili hay đổi cách trả video.
+- Chỉ dùng phim tải về đúng với quyền của người đăng. Khi đăng lại phim, bạn tự chịu trách nhiệm về bản quyền.
+
+## Dịch phụ đề
 
 1. **Nhà cung cấp:** chọn nơi bạn có API key. Dán key vào ô API Key; có nhiều key thì mỗi dòng một key, app sẽ xoay vòng giữa các key.
    **Dùng nhiều nhà cung cấp cùng lúc:** ở mỗi nhà cung cấp muốn dùng, nhập key, chọn model rồi tick ô **Dùng nhà cung cấp này khi dịch**. Dòng tóm tắt ngay bên dưới cho biết lúc dịch sẽ dùng những nguồn nào. App xoay vòng qua mọi key của mọi nhà cung cấp đã tick; key nào lỗi hẳn (sai key, hết tiền) sẽ bị loại và các nguồn còn lại dịch tiếp. Nếu không tick ô nào thì app chỉ dùng nhà cung cấp đang chọn.
@@ -82,6 +97,8 @@ Font: app liệt kê font trong Windows và trong thư mục `fonts` cạnh app.
 | `app/providers.py` | Gọi API: lớp chung cho chuẩn OpenAI và lớp riêng cho Claude |
 | `app/transcribe.py` | Tách tiếng bằng ffmpeg, cắt đoạn theo chỗ im lặng, cho Gemini trên Vertex nghe và chép lời |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
+| `app/bilibili.py` | Tìm kiếm Bilibili (cookie khách buvid3, WBI dự phòng), danh sách tập, tải bằng yt-dlp |
+| `app/search_page.py` | Tab Tìm & tải phim |
 | `app/gui.py` | Giao diện PySide6 (khung chính, trang Dịch phụ đề) |
 | `app/render.py` | Xuất video: SRT → ASS (kiểu chữ), che chữ cứng (làm mờ / hộp), xem trước một khung hình, nén x264/NVENC |
 | `app/render_page.py` | Trang Xuất video Vietsub |
