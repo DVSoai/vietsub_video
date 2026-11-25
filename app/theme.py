@@ -121,6 +121,12 @@ QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; im
 #stepChip[state="now"] {{ background: #10241f; border-color: {ACCENT}; color: {ACCENT_HOVER}; font-weight: 700; }}
 #stepChip[state="done"] {{ color: {ACCENT}; border-color: {ACCENT_DARK}; }}
 #stepChip[state="skip"] {{ color: #4a5568; border-color: {CARD_2}; }}
+QTabWidget#dubTabs::pane {{ border: none; top: -1px; }}
+QTabWidget#dubTabs QTabBar::tab {{ background: {CARD_2}; color: {MUTED}; border: 1px solid {BORDER};
+    border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px;
+    padding: 6px 14px; margin-right: 4px; font-size: 9.5pt; }}
+QTabWidget#dubTabs QTabBar::tab:selected {{ background: #10241f; color: {ACCENT_HOVER}; border-color: {ACCENT_DARK}; font-weight: 700; }}
+QTabWidget#dubTabs QTabBar::tab:hover:!selected {{ color: {TEXT}; }}
 #jobs {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; font-size: 9pt; }}
 #jobs::item {{ padding: 2px 8px; border-bottom: 1px solid #151a23; }}
 QHeaderView::section {{ background: {CARD_2}; color: {MUTED}; border: none;

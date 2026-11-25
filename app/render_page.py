@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import srt
-from .render import PRESETS, Cover, Exporter, ExportOpts, SubStyle, font_catalog, preview_frame, probe
+from .render import PRESETS, Cover, Exporter, ExportOpts, Look, SubStyle, font_catalog, preview_frame, probe
 from .transcribe import MEDIA_EXT, is_media
 
 VIDEO_EXT = {e for e in MEDIA_EXT if e not in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}}
@@ -227,7 +227,7 @@ class RenderPage(QWidget):
         v2.addWidget(hint)
 
         c3, v3 = _card("Che chữ có sẵn trong video", "3")
-        self.cb_cover = QComboBox(); self.cb_cover.addItems(["Không che", "Làm mờ", "Hộp màu"])
+        self.cb_cover = QComboBox(); self.cb_cover.addItems(["Không che", "Làm mờ", "Hộp màu", "Xoá chữ (nội suy nền)"])
         self.sp_cy = QDoubleSpinBox(); self.sp_cy.setRange(0, 99); self.sp_cy.setSingleStep(0.5); self.sp_cy.setSuffix(" %")
         self.sp_ch = QDoubleSpinBox(); self.sp_ch.setRange(1, 100); self.sp_ch.setSingleStep(0.5); self.sp_ch.setSuffix(" %")
         self.sp_cx = QDoubleSpinBox(); self.sp_cx.setRange(0, 45); self.sp_cx.setSingleStep(0.5); self.sp_cx.setSuffix(" %")
@@ -260,9 +260,13 @@ class RenderPage(QWidget):
         orow = QHBoxLayout(); orow.setSpacing(8); orow.addWidget(self.ed_out, 1); orow.addWidget(self.btn_out)
         e1 = QHBoxLayout(); e1.setSpacing(12)
         e1.addLayout(_field("Nén bằng", self.cb_enc), 3); e1.addLayout(_field("Chất lượng", self.cb_quality), 2)
-        v4.addLayout(e1); v4.addLayout(_field("Lưu thành", orow))
+        self.cb_audio = QComboBox(); self.cb_audio.addItems(["Tiếng gốc của video", "Tiếng lồng (giọng Việt)"])
+        v4.addLayout(e1)
+        v4.addLayout(_field("Âm thanh", self.cb_audio, "Tiếng lồng lấy từ file .vi.dub.m4a do tab Lồng tiếng tạo"))
+        v4.addLayout(_field("Lưu thành", orow))
 
-        for c in (c1, c2, c3, c4):
+        c5 = self._build_look()
+        for c in (c1, c2, c3, c5, c4):
             lv.addWidget(c)
         lv.addStretch(1)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(left)
@@ -336,6 +340,113 @@ class RenderPage(QWidget):
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(280)
         self._timer.timeout.connect(self._render_preview)
 
+    # ============================================================ khung hình & hiệu ứng (kiểu CapCut)
+    def _build_look(self):
+        from PySide6.QtWidgets import QDoubleSpinBox, QGridLayout
+        c, v = _card("Khung hình, màu & âm thanh", "✦")
+
+        def dsp(lo, hi, step, val, suf="", dec=2):
+            w = QDoubleSpinBox(); w.setRange(lo, hi); w.setSingleStep(step); w.setDecimals(dec)
+            w.setValue(val); w.setSuffix(suf); return w
+
+        def isp(lo, hi, val, suf=""):
+            w = QSpinBox(); w.setRange(lo, hi); w.setValue(val); w.setSuffix(suf); return w
+        self.lk_speed = dsp(0.5, 2.0, 0.05, 1.0, " x")
+        self.lk_aspect = QComboBox()
+        for label, val in (("Giữ nguyên", ""), ("9:16 · TikTok / Shorts", "9:16"), ("16:9 · YouTube", "16:9"),
+                           ("1:1 · vuông", "1:1"), ("4:5 · Facebook", "4:5")):
+            self.lk_aspect.addItem(label, val)
+        self.lk_bg = QComboBox(); self.lk_bg.addItem("Nền mờ từ video", "blur"); self.lk_bg.addItem("Nền đen", "black")
+        self.lk_zoom = isp(100, 150, 100, " %")
+        self.lk_flip = QCheckBox("Lật ngang")
+        self.lk_bright = isp(-50, 50, 0); self.lk_contrast = isp(50, 150, 100, " %")
+        self.lk_sat = isp(0, 200, 100, " %"); self.lk_sharp = isp(0, 100, 0)
+        self.lk_logo = QLineEdit(); self.lk_logo.setPlaceholderText("Ảnh logo .png (nền trong suốt)")
+        self.lk_logo_btn = _btn("Chọn…", "ghost")
+        self.lk_logo_pos = QComboBox()
+        for label, val in (("Góc trên phải", "tr"), ("Góc trên trái", "tl"), ("Góc dưới phải", "br"), ("Góc dưới trái", "bl")):
+            self.lk_logo_pos.addItem(label, val)
+        self.lk_logo_size = isp(4, 40, 12, " %"); self.lk_logo_op = isp(10, 100, 90, " %")
+        self.lk_fade = dsp(0, 5, 0.5, 0.0, " s", 1)
+        self.lk_music = QLineEdit(); self.lk_music.setPlaceholderText("Nhạc nền thêm (.mp3/.m4a), tự lặp cho đủ dài")
+        self.lk_music_btn = _btn("Chọn…", "ghost")
+        self.lk_music_vol = isp(0, 100, 20, " %"); self.lk_voice_vol = isp(20, 200, 100, " %")
+        self.lk_denoise = QCheckBox("Giảm ồn")
+
+        g = QGridLayout(); g.setHorizontalSpacing(10); g.setVerticalSpacing(8)
+        g.addLayout(_field("Tốc độ video", self.lk_speed), 0, 0)
+        g.addLayout(_field("Khung hình", self.lk_aspect), 0, 1)
+        g.addLayout(_field("Nền khung", self.lk_bg), 0, 2)
+        g.addLayout(_field("Phóng to", self.lk_zoom), 1, 0)
+        g.addLayout(_field("Độ sáng", self.lk_bright), 1, 1)
+        g.addLayout(_field("Tương phản", self.lk_contrast), 1, 2)
+        g.addLayout(_field("Bão hoà màu", self.lk_sat), 2, 0)
+        g.addLayout(_field("Làm nét", self.lk_sharp), 2, 1)
+        g.addLayout(_field("Mờ dần đầu/cuối", self.lk_fade), 2, 2)
+        v.addLayout(g)
+        v.addWidget(self.lk_flip)
+        lr = QHBoxLayout(); lr.setSpacing(8); lr.addWidget(self.lk_logo, 1); lr.addWidget(self.lk_logo_btn)
+        v.addLayout(_field("Logo kênh", lr))
+        g2 = QHBoxLayout(); g2.setSpacing(10)
+        g2.addLayout(_field("Vị trí", self.lk_logo_pos), 2); g2.addLayout(_field("Cỡ", self.lk_logo_size), 1)
+        g2.addLayout(_field("Đậm", self.lk_logo_op), 1)
+        v.addLayout(g2)
+        mr = QHBoxLayout(); mr.setSpacing(8); mr.addWidget(self.lk_music, 1); mr.addWidget(self.lk_music_btn)
+        v.addLayout(_field("Nhạc nền", mr))
+        g3 = QHBoxLayout(); g3.setSpacing(10)
+        g3.addLayout(_field("Âm lượng nhạc", self.lk_music_vol), 1)
+        g3.addLayout(_field("Âm lượng tiếng chính", self.lk_voice_vol), 1)
+        dn = QVBoxLayout(); dn.addStretch(1); dn.addWidget(self.lk_denoise); g3.addLayout(dn)
+        v.addLayout(g3)
+        h = QLabel("Tốc độ video giống nút Tốc độ của CapCut: phụ đề và tiếng tự khớp theo, giọng không bị méo. "
+                   "Đổi khung 9:16 để đăng TikTok/Shorts.")
+        h.setObjectName("hint"); h.setWordWrap(True); v.addWidget(h)
+
+        def pick(ed, title, flt):
+            f, _ = QFileDialog.getOpenFileName(self, title, "", flt)
+            if f:
+                ed.setText(f)
+        self.lk_logo_btn.clicked.connect(lambda: pick(self.lk_logo, "Chọn logo", "Ảnh (*.png *.jpg *.jpeg *.webp)"))
+        self.lk_music_btn.clicked.connect(lambda: pick(self.lk_music, "Chọn nhạc nền",
+                                                       "Âm thanh (*.mp3 *.m4a *.wav *.aac *.ogg *.flac)"))
+        for w in (self.lk_zoom, self.lk_bright, self.lk_contrast, self.lk_sat, self.lk_sharp, self.lk_logo_size,
+                  self.lk_logo_op):
+            w.valueChanged.connect(self._look_changed)
+        for w in (self.lk_aspect, self.lk_bg, self.lk_logo_pos):
+            w.currentIndexChanged.connect(self._look_changed)
+        self.lk_flip.toggled.connect(self._look_changed)
+        self.lk_logo.textChanged.connect(self._look_changed)
+        return c
+
+    def _look_changed(self, *_):
+        self.lk_bg.setEnabled(bool(self.lk_aspect.currentData()))
+        self._update_cover_widgets()
+        if not self._loading:
+            self._schedule_preview()
+
+    def _look(self) -> Look:
+        return Look(speed=self.lk_speed.value(), aspect=self.lk_aspect.currentData() or "",
+                    bg=self.lk_bg.currentData(), zoom=self.lk_zoom.value(), flip=self.lk_flip.isChecked(),
+                    bright=self.lk_bright.value(), contrast=self.lk_contrast.value(), sat=self.lk_sat.value(),
+                    sharpen=self.lk_sharp.value(), logo=self.lk_logo.text().strip(),
+                    logo_pos=self.lk_logo_pos.currentData(), logo_size=self.lk_logo_size.value(),
+                    logo_opacity=self.lk_logo_op.value(), fade=self.lk_fade.value(),
+                    music=self.lk_music.text().strip(), music_vol=self.lk_music_vol.value(),
+                    voice_vol=self.lk_voice_vol.value(), denoise=self.lk_denoise.isChecked())
+
+    def _set_look(self, d: dict):
+        names = {f.name for f in fields(Look)}
+        lk = Look(**{k: v for k, v in d.items() if k in names})
+        self.lk_speed.setValue(lk.speed); self.lk_aspect.setCurrentIndex(max(0, self.lk_aspect.findData(lk.aspect)))
+        self.lk_bg.setCurrentIndex(max(0, self.lk_bg.findData(lk.bg))); self.lk_zoom.setValue(lk.zoom)
+        self.lk_flip.setChecked(lk.flip); self.lk_bright.setValue(lk.bright); self.lk_contrast.setValue(lk.contrast)
+        self.lk_sat.setValue(lk.sat); self.lk_sharp.setValue(lk.sharpen); self.lk_logo.setText(lk.logo)
+        self.lk_logo_pos.setCurrentIndex(max(0, self.lk_logo_pos.findData(lk.logo_pos)))
+        self.lk_logo_size.setValue(lk.logo_size); self.lk_logo_op.setValue(lk.logo_opacity); self.lk_fade.setValue(lk.fade)
+        self.lk_music.setText(lk.music); self.lk_music_vol.setValue(lk.music_vol); self.lk_voice_vol.setValue(lk.voice_vol)
+        self.lk_denoise.setChecked(lk.denoise)
+        self.lk_bg.setEnabled(bool(lk.aspect))
+
     # ============================================================ trạng thái
     def _style(self) -> SubStyle:
         fam = self.cb_font.currentText().strip()
@@ -348,14 +459,22 @@ class RenderPage(QWidget):
             margin_pct=self.sp_margin.value(), align="top" if self.cb_align.currentIndex() == 1 else "bottom")
 
     def _cover(self) -> Cover:
-        return Cover(mode=["none", "blur", "box"][self.cb_cover.currentIndex()],
+        return Cover(mode=["none", "blur", "box", "erase"][self.cb_cover.currentIndex()],
                      y_pct=self.sp_cy.value(), h_pct=self.sp_ch.value(), x_pct=self.sp_cx.value(),
                      blur=self.sp_blur.value(), box_color=self.col_cover.color,
                      box_opacity=self.sp_cover_op.value())
 
+    def dub_audio(self) -> str:
+        if not self.video:
+            return ""
+        p = Path(self.video)
+        f = p.with_name(p.stem + ".vi.dub.m4a")
+        return str(f) if f.exists() else ""
+
     def _opts(self) -> ExportOpts:
         crf = [18, 20, 23][self.cb_quality.currentIndex()]
-        return ExportOpts(encoder="nvenc" if self.cb_enc.currentIndex() == 1 else "x264", crf=crf)
+        audio = self.dub_audio() if self.cb_audio.currentIndex() == 1 else ""
+        return ExportOpts(encoder="nvenc" if self.cb_enc.currentIndex() == 1 else "x264", crf=crf, audio_file=audio)
 
     def _set_style(self, st: SubStyle):
         self._loading = True
@@ -377,16 +496,18 @@ class RenderPage(QWidget):
         self._set_style(st)
         cnames = {f.name for f in fields(Cover)}
         cv = Cover(**{k: v for k, v in r.get("cover", {}).items() if k in cnames})
-        self.cb_cover.setCurrentIndex({"none": 0, "blur": 1, "box": 2}.get(cv.mode, 0))
+        self.cb_cover.setCurrentIndex({"none": 0, "blur": 1, "box": 2, "erase": 3}.get(cv.mode, 0))
         self.sp_cy.setValue(cv.y_pct); self.sp_ch.setValue(cv.h_pct); self.sp_cx.setValue(cv.x_pct)
         self.sp_blur.setValue(cv.blur); self.col_cover.set_color(cv.box_color); self.sp_cover_op.setValue(cv.box_opacity)
         self.cb_enc.setCurrentIndex(r.get("encoder", 0)); self.cb_quality.setCurrentIndex(r.get("quality", 1))
+        self._set_look(r.get("look", {}))
         self._update_cover_widgets()
 
     def store_state(self):
         st = asdict(self._style()); st.pop("font_files", None)
         self.cfg["render"] = {"style": st, "cover": asdict(self._cover()),
-                              "encoder": self.cb_enc.currentIndex(), "quality": self.cb_quality.currentIndex()}
+                              "encoder": self.cb_enc.currentIndex(), "quality": self.cb_quality.currentIndex(),
+                              "look": asdict(self._look())}
 
     def _changed(self, *_):
         self._update_cover_widgets()
@@ -402,7 +523,8 @@ class RenderPage(QWidget):
         self.boxc_wrap.setVisible(m == 2)
         for w in (self.sp_cy, self.sp_ch, self.sp_cx, self.btn_fit):
             w.setEnabled(m != 0)
-        self.preview.cover_rect = None if m == 0 else (
+        reframed = hasattr(self, "lk_aspect") and bool(self.lk_aspect.currentData())
+        self.preview.cover_rect = None if (m == 0 or reframed) else (
             self.sp_cx.value(), self.sp_cy.value(), 100 - 2 * self.sp_cx.value(), self.sp_ch.value())
         self.preview._redraw()
 
@@ -467,6 +589,9 @@ class RenderPage(QWidget):
         if sub:
             self.set_sub(sub)
         self.ed_out.setText(str(Path(path).with_name(Path(path).stem + ".vietsub.mp4")))
+        has_dub = bool(self.dub_audio())
+        self.cb_audio.model().item(1).setEnabled(has_dub)
+        self.cb_audio.setCurrentIndex(1 if has_dub else 0)
         self._state(f"Video {self.info['w']}×{self.info['h']}, dài {_fmt(dur)}"
                     + ("" if self.info["has_audio"] else " (không có tiếng)"))
         if self.cues:
@@ -574,9 +699,10 @@ class RenderPage(QWidget):
             return
         self._prev_dirty = False
         video, cues, st, cv, at, info = self.video, list(self.cues), self._style(), self._cover(), self._cur_time(), self.info
+        lk = self._look()
         out = self._prev_png
         self.lb_prev_state.setText("đang vẽ…")
-        self._prev_job = _Job(lambda: preview_frame(video, cues, st, cv, at, out, info, max_w=1280))
+        self._prev_job = _Job(lambda: preview_frame(video, cues, st, cv, at, out, info, max_w=1280, look=lk))
         self._prev_job.result.connect(self._on_preview)
         self._prev_job.start()
 
@@ -607,7 +733,7 @@ class RenderPage(QWidget):
                 self, "Ghi đè?", f"{Path(out).name} đã có. Ghi đè?") != QMessageBox.Yes:
             return
         self.store_state(); self.save_cfg()
-        ex = Exporter(self.video, list(self.cues), self._style(), self._cover(), self._opts(), out)
+        ex = Exporter(self.video, list(self.cues), self._style(), self._cover(), self._opts(), out, look=self._look())
         self.exporter = _ExportThread(ex)
         self.exporter.progress.connect(self._on_progress)
         self.exporter.log.connect(self.main_log)

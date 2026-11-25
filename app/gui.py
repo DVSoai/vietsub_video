@@ -73,6 +73,7 @@ class Worker(QThread):
         self.mode, self.files, self.out_dir = mode, files, out_dir
         self.providers, self.settings = providers, settings
         self.only_transcribe = only_transcribe
+        self.asr_engine = ""
         self.stop_event = threading.Event()
 
     def _source_cues(self, path: str) -> list:
@@ -87,7 +88,7 @@ class Worker(QThread):
         if self.mode == "fix":
             return []
         tc = Transcriber(self.providers, self.settings.source_lang, self.settings.custom_prompt,
-                         threads=min(self.settings.threads, 8), stop=self.stop_event,
+                         threads=min(self.settings.threads, 8), stop=self.stop_event, engine=self.asr_engine,
                          log=self.log.emit, progress=self.progress.emit, event=self.event.emit)
         cues = tc.run(path)
         if self.stop_event.is_set():
@@ -247,7 +248,7 @@ class DropZone(QFrame):
         h.addWidget(icon)
         col = QVBoxLayout(); col.setSpacing(2)
         self.title = QLabel("Kéo thả phụ đề .srt hoặc video vào đây"); self.title.setObjectName("dropTitle")
-        self.sub = QLabel("Video sẽ được nghe giọng bằng Vertex AI · chọn nhiều file cho cả bộ phim")
+        self.sub = QLabel("Video sẽ được nghe giọng thành phụ đề · chọn nhiều file cho cả bộ phim")
         self.sub.setObjectName("muted")
         self.sub.setWordWrap(True)
         col.addWidget(self.title); col.addWidget(self.sub)
@@ -316,7 +317,7 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Xuất video Vietsub")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
@@ -395,7 +396,20 @@ class MainWindow(QMainWindow):
         self.chk_only_tc.setCursor(Qt.PointingHandCursor)
         self.chk_only_tc.setMinimumHeight(24)
         v2.addWidget(self.drop)
-        v2.addWidget(self.chk_only_tc)
+        from .hf_local import WHISPER_MODELS
+        self.cb_asr = QComboBox()
+        self.cb_asr.addItem("Nghe bằng Gemini / Vertex AI", "")
+        self.cb_asr.setToolTip("Video được nghe giọng thành phụ đề gốc trước khi dịch.\n"
+                               "HF = model Hugging Face chạy trên card của bạn, miễn phí, không cần key")
+        for label, mid in WHISPER_MODELS.items():
+            self.cb_asr.addItem(f"HF {label} · free", mid)
+        i = self.cb_asr.findData(self.cfg.get("asr", ""))
+        self.cb_asr.setCurrentIndex(max(0, i))
+        self.cb_asr.currentIndexChanged.connect(lambda _: self.cfg.__setitem__("asr", self.cb_asr.currentData() or ""))
+        self.chk_only_tc.setText("Chỉ tạo phụ đề gốc")
+        arow = QHBoxLayout(); arow.setSpacing(10)
+        arow.addWidget(self.cb_asr, 1); arow.addWidget(self.chk_only_tc)
+        v2.addLayout(arow)
         v2.addLayout(field("Lưu vào thư mục", orow))
         v2.addLayout(lrow)
         v2.addLayout(field("Prompt riêng cho phim", prow,
@@ -524,7 +538,11 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.search_page)   # 0 · Tìm & tải phim
         self.stack.addWidget(page1)              # 1 · Dịch phụ đề
-        self.stack.addWidget(self.render_page)   # 2 · Xuất video Vietsub
+        from .dub_page import DubPage
+        self.dub_page = DubPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers,
+                                lambda: self.ed_output.text().strip(), lambda: self.render_page)
+        self.stack.addWidget(self.dub_page)      # 2 · Lồng tiếng
+        self.stack.addWidget(self.render_page)   # 3 · Xuất video Vietsub
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -601,8 +619,15 @@ class MainWindow(QMainWindow):
     def _go_page(self, i: int):
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
+        if self.cfg.get("page") == 3 and i == 2 and getattr(self.render_page, "_dub_sync", None):
+            self.dub_page.pull_cover_from_render(self.render_page)
+            self.render_page._dub_sync = None
         self.cfg["page"] = i
-        if i == 2 and not self.render_page.video:
+        media_vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
+                      {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
+        if i == 2 and not self.dub_page.video and media_vids:
+            self.dub_page.set_video(media_vids[0])
+        if i == 3 and not self.render_page.video:
             vids = [f for f in self.files if is_media(f) and Path(f).suffix.lower() not in
                     {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".flac"}]
             if vids:
@@ -613,6 +638,8 @@ class MainWindow(QMainWindow):
             self.render_page.store_state()
         if hasattr(self, "search_page"):
             self.search_page.store_state()
+        if hasattr(self, "dub_page"):
+            self.dub_page.store_state()
         self._save_provider_state(self.cb_provider.currentText())
         self.cfg.update(
             provider=self.cb_provider.currentText(), output=self.ed_output.text(),
@@ -644,10 +671,17 @@ class MainWindow(QMainWindow):
         sa = p["kind"] == "vertex_sa"
         self.sa_wrap.setVisible(sa)
         self.btn_json.setVisible(sa)
-        self.lb_keys.setText("FILE SERVICE ACCOUNT (.JSON)" if sa else "API KEY")
+        local = p["kind"] == "hf_local"
         self.ed_keys.setPlaceholderText(
             "Bấm “Chọn file JSON…” (vd: vertex.json)\nNhiều file: mỗi dòng một đường dẫn" if sa else
+            "Không cần key: model chạy ngay trên card của bạn, miễn phí, không giới hạn.\n"
+            "Cần cài trước bằng cai_long_tieng_gpu.bat. Qwen 7B tự nén 4-bit cho card 8 GB." if local else
+            "Dán token Hugging Face (hf_…) tạo ở huggingface.co/settings/tokens\n"
+            "Tài khoản free chỉ có ít lượt mỗi tháng" if name.startswith("Hugging Face") else
             "Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
+        self.ed_keys.setEnabled(not local)
+        self.lb_keys.setText("FILE SERVICE ACCOUNT (.JSON)" if sa else ("KHÔNG CẦN KEY" if local else
+                             ("TOKEN HUGGING FACE" if name.startswith("Hugging Face") else "API KEY")))
         self.ed_project.setText(pc.get("project", ""))
         self.cb_location.setCurrentText(pc.get("location", "global"))
         custom = not p["base_url"] and not sa
@@ -734,6 +768,8 @@ class MainWindow(QMainWindow):
 
     def _make_providers(self, need_key=True):
         keys = self._keys()
+        if PROVIDERS[self.cb_provider.currentText()]["kind"] == "hf_local":
+            keys = ["local"]
         if need_key and not keys:
             raise ProviderError("Chưa nhập API key")
         model = self.cb_model.currentText().strip()
@@ -766,11 +802,15 @@ class MainWindow(QMainWindow):
         for name in PROVIDERS:
             pc = self.cfg.get("per_provider", {}).get(name, {})
             keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
+            if PROVIDERS[name]["kind"] == "hf_local":
+                keys = ["local"]
             if pc.get("enabled") and keys and pc.get("model"):
                 out.append((name, keys, pc["model"], pc))
         if not out and cur:
             pc = self.cfg["per_provider"][cur]
             keys = [k.strip() for k in pc.get("keys", "").splitlines() if k.strip()]
+            if PROVIDERS[cur]["kind"] == "hf_local":
+                keys = ["local"]
             out.append((cur, keys, pc.get("model", ""), pc))
         return out
 
@@ -859,6 +899,7 @@ class MainWindow(QMainWindow):
         self._log(f"Nguồn dịch: {', '.join(names)} — tổng {len(providers)} key")
         self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings,
                              only_transcribe=self.chk_only_tc.isChecked())
+        self.worker.asr_engine = self.cb_asr.currentData() or ""
         self.worker.log.connect(self._log)
         self.worker.progress.connect(self._on_progress)
         self.worker.event.connect(self._on_event)
@@ -1074,8 +1115,13 @@ class MainWindow(QMainWindow):
                 self, "Đang tải phim", "Vẫn còn phim đang tải. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
+        if self.dub_page.busy() and QMessageBox.question(
+                self, "Đang lồng tiếng", "Đang lồng tiếng. Dừng và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
         self.render_page.shutdown()
         self.search_page.shutdown()
+        self.dub_page.shutdown()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(5000)
