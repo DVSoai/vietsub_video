@@ -381,7 +381,7 @@ def filter_graph(info: dict, cover: Cover, with_subs: bool, look: Look | None = 
                  logo_idx: int | None = None, duration: float = 0.0) -> str:
     w, h = info["w"], info["h"]
     parts, cur = [], "[0:v]"
-    cur = look_pre(cur, info, look, parts)
+    # 1) che/xoá chữ cứng trên khung hình GỐC trước -> vị trí đã căn không lệch khi đổi phóng to/lật
     if cover.mode == "erase" and cover.h_pct > 0:
         # delogo: lấp vùng chữ bằng màu nội suy từ viền xung quanh; vùng không được chạm mép khung
         y = max(1, _even(h * cover.y_pct / 100))
@@ -414,6 +414,8 @@ def filter_graph(info: dict, cover: Cover, with_subs: bool, look: Look | None = 
                 parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:"
                              f"color=0x{col}@{cover.box_opacity / 100:.2f}:t=fill[cv]")
             cur = "[cv]"
+    # 2) tốc độ, lật, phóng to, màu  3) phụ đề Việt  4) khung hình, logo, mờ dần
+    cur = look_pre(cur, info, look, parts)
     if with_subs:
         parts.append(f"{cur}ass=sub.ass:fontsdir=fonts[sb]")
         cur = "[sb]"

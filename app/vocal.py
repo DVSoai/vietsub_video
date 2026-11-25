@@ -177,7 +177,8 @@ def separate_file(media: str, out_inst: str, out_voc: str, log=print, progress=l
     log("  Đang tải model tách giọng (lần đầu ~60 MB)…" if not (models_dir() / MODEL_NAME).exists() else "  Đang nạp model tách giọng…")
     sep = Separator(log=log)
     mix = load_audio(media)
-    inst, voc = sep.separate(mix, progress=progress, stop=stop)
+    # CPU: 1 đoạn/lượt để bấm Dừng có tác dụng sau vài giây (gộp 4 đoạn trên CPU không nhanh hơn)
+    inst, voc = sep.separate(mix, progress=progress, stop=stop, batch=4 if sep.device.startswith("GPU") else 1)
     save_wav(out_inst, inst)
     save_wav(out_voc, voc)
     return sep.device

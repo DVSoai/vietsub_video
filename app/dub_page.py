@@ -70,9 +70,22 @@ class DubWorker(QThread):
         self.p, self.mode, self.only = page, mode, only
         self.stop_event = threading.Event()
         # chụp tuỳ chọn lúc bấm chạy (luồng nền không đọc thẳng widget)
-        self.o = {"remove": page.rb_remove.isChecked(), "retr": page.chk_retr.isChecked(),
+        try:
+            provs, prov_err = page.providers(), ""
+        except Exception as e:  # noqa: BLE001  (chưa cấu hình AI: chỉ lỗi khi thật sự cần)
+            provs, prov_err = [], str(e)
+        self.o = {"providers": provs, "prov_err": prov_err, "asr": page.cfg.get("asr", ""),
+                  "zh_srt": page.find_srt(page.src_code), "audio": page.dub_audio_path(),
+                  "video_out": page.dub_video_path(),
+                  "remove": page.rb_remove.isChecked(), "retr": page.chk_retr.isChecked(),
                   "skip_review": page.chk_skip_review.isChecked(), "export": page.chk_export.isChecked(),
                   "mix": page.mix_options(), "hints": page.hints(), "vis": page.visual_settings()}
+
+    def _providers(self):
+        if not self.o["providers"]:
+            from .providers import ProviderError
+            raise ProviderError(self.o["prov_err"] or "Chưa có nhà cung cấp AI")
+        return self.o["providers"]
 
     # ---------------------------------------------------------------- các bước
     def _sep(self):
@@ -90,15 +103,15 @@ class DubWorker(QThread):
 
     def _asr(self) -> str:
         p = self.p
-        zh = p.find_srt(p.src_code)
+        zh = self.o["zh_srt"]
         if zh:
             self.log.emit(f"  Dùng phụ đề gốc có sẵn: {Path(zh).name}")
             return zh
         from .transcribe import Transcriber
         self.stage.emit("asr", "Gemini đang nghe giọng (kèm người nói, giới tính, cảm xúc)…")
         voc = os.path.join(p.workdir, "vocals.wav")
-        eng = p.cfg.get("asr", "")
-        tc = Transcriber(p.providers(), p.src_lang, self.o['hints'], threads=6, stop=self.stop_event, engine=eng,
+        eng = self.o["asr"]
+        tc = Transcriber(self._providers(), p.src_lang, self.o['hints'], threads=6, stop=self.stop_event, engine=eng,
                          log=self.log.emit, progress=self.progress.emit, speakers=True)
         cues = tc.run(voc if os.path.exists(voc) else p.video)
         if self.stop_event.is_set():
@@ -126,7 +139,7 @@ class DubWorker(QThread):
         durs = {str(c.index): max(0.6, ts_seconds(c.end) - ts_seconds(c.start)) for c in cues}
         st = Settings(source_lang=p.src_lang, target_lang="Tiếng Việt", threads=6, batch_size=25,
                       custom_prompt=self.o['hints'], dub_durations=durs)
-        tr = Translator(p.providers(), st, self.stop_event)
+        tr = Translator(self._providers(), st, self.stop_event)
         tr.cb.log = self.log.emit
         tr.cb.progress = self.progress.emit
         res = tr.translate_cues(cues)
@@ -143,9 +156,37 @@ class DubWorker(QThread):
         if os.path.exists(sp):
             spk = json.load(open(sp, encoding="utf-8"))
         proj = p.project
+        old_chars = {c.name: c for c in proj.characters}
+        old_lines = {(l.index, l.src): l for l in proj.lines}
         proj.lines = lines_from_srt(vi, zh, spk)
+        if not self.o["retr"]:
+            # chạy lại không dịch lại: giữ câu đã sửa tay và nhân vật đã chỉnh cho từng câu
+            for l in proj.lines:
+                o = old_lines.get((l.index, l.src))
+                if o:
+                    l.text, l.speaker, l.emotion = o.text, o.speaker or l.speaker, o.emotion or l.emotion
+        if old_chars and all(l.speaker in old_chars for l in proj.lines) and not self.o["retr"]:
+            self.log.emit("  Giữ nguyên nhân vật & giọng đã chọn (không nhận diện lại)")
+            proj.characters = list(old_chars.values())
+            auto_assign_voices(proj.characters, p.engine.voices())
+            proj.save()
+            return
         self.stage.emit("chars", "Đang nhận diện nhân vật…")
-        chars, assign = analyze_characters(p.providers()[0], proj.lines, log=self.log.emit, stop=self.stop_event)
+        try:
+            chars, assign = analyze_characters(self._providers()[0], proj.lines, log=self.log.emit, stop=self.stop_event)
+        except Stopped:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # không có / lỗi AI: chia theo giới tính nghe được (nếu có), còn lại là Người dẫn chuyện
+            self.log.emit(f"  ⚠ Không nhận diện nhân vật bằng AI được ({str(e)[:120]}). "
+                          "Tạm chia theo giới tính; bạn đổi nhân vật từng câu ở bảng Câu thoại.")
+            names = {"nam": "Nhân vật nam", "nữ": "Nhân vật nữ"}
+            chars, assign = [], {}
+            for l in proj.lines:
+                nm = names.get(l.gender_hint, "Người dẫn chuyện")
+                assign[l.index] = (nm, l.emotion)
+                if nm not in [c.name for c in chars]:
+                    chars.append(Character(nm, l.gender_hint if l.gender_hint in ("nam", "nữ") else ""))
         for l in proj.lines:
             sp_, emo = assign.get(l.index, ("", ""))
             l.speaker = sp_ or l.speaker or "Người dẫn chuyện"
@@ -155,6 +196,11 @@ class DubWorker(QThread):
             if l.speaker not in names:
                 g = l.gender_hint if l.gender_hint in ("nam", "nữ") else ""
                 chars.append(Character(l.speaker, g)); names.add(l.speaker)
+        for c in chars:          # giữ giọng/tốc độ/cao độ/âm lượng người dùng đã chọn cho nhân vật cùng tên
+            o = old_chars.get(c.name)
+            if o:
+                c.voice, c.speed, c.pitch, c.volume = o.voice, o.speed, o.pitch, o.volume
+                c.gender = o.gender or c.gender
         proj.characters = chars
         self.stage.emit("chars", "Đang nạp danh sách giọng VieNeu…")
         auto_assign_voices(proj.characters, p.engine.voices())
@@ -199,13 +245,13 @@ class DubWorker(QThread):
             self._write_scaled_srt(lines)
         gains = {l.index: (proj.char(l.speaker).volume if proj.char(l.speaker) else 1.0) for l in proj.lines}
         self.stage.emit("mix", "Đang khớp thời gian và trộn với nhạc nền…")
-        fitted = fit_lines(lines, wavs, opt.max_speed, sr, log=self.log.emit)
-        out = mix(lines, fitted, bg, opt, sr, gains)
+        fitted, starts = fit_lines(lines, wavs, opt.max_speed, sr, log=self.log.emit)
+        out = mix(lines, fitted, bg, opt, sr, gains, starts)
         tmp = os.path.join(p.workdir, "dub_mix.wav")
         save_wav(tmp, out, sr)
-        encode_m4a(tmp, p.dub_audio_path())
+        encode_m4a(tmp, self.o["audio"])
         os.remove(tmp)
-        self.log.emit(f"  ✔ Đã trộn → {p.dub_audio_path()}")
+        self.log.emit(f"  ✔ Đã trộn → {self.o['audio']}")
 
     def _export_visual(self, out: str, vis: dict):
         """Xuất kèm xoá/che chữ Trung, in phụ đề Việt, khung hình, logo, màu (dùng bộ xuất của tab Xuất video)."""
@@ -232,7 +278,7 @@ class DubWorker(QThread):
     def _write_scaled_srt(self, lines):
         """Video đổi tốc độ -> phụ đề Việt khớp với video mới để in ở tab Xuất video."""
         p = self.p
-        out = str(Path(p.dub_video_path()).with_suffix("")) + ".vi.srt"
+        out = str(Path(self.o["video_out"]).with_suffix("")) + ".vi.srt"
         cues = [srt.Cue(i + 1, _ts(l.start), _ts(l.end), l.text) for i, l in enumerate(lines)]
         with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
             f.write(srt.compose(cues))
@@ -244,7 +290,7 @@ class DubWorker(QThread):
             p = self.p
             os.makedirs(p.workdir, exist_ok=True)
             if self.mode == "auto":
-                need_sep = self.o['remove'] or not p.find_srt(p.src_code)
+                need_sep = self.o['remove'] or not self.o["zh_srt"]
                 if need_sep:
                     self._sep()
                 zh = self._asr()
@@ -262,16 +308,16 @@ class DubWorker(QThread):
                 pass
             if (self.mode in ("auto", "voice") and self.o['export']) or self.mode == "export":
                 self.stage.emit("mix", "Đang ghép tiếng lồng vào video…")
-                out = p.dub_video_path()
+                out = self.o["video_out"]
                 vis = self.o["vis"]
                 if vis is None:
-                    mux_video(p.video, p.dub_audio_path(), out, self.o["mix"].video_speed)
+                    mux_video(p.video, self.o["audio"], out, self.o["mix"].video_speed, stop=self.stop_event)
                 else:
                     self._export_visual(out, vis)
                 self.log.emit(f"  ✔ Video lồng tiếng: {out}")
                 self.done.emit(out, "")
                 return
-            self.done.emit(p.dub_audio_path(), "")
+            self.done.emit(self.o["audio"], "")
         except Stopped:
             self.done.emit("", "Đã dừng")
         except Exception as e:  # noqa: BLE001
@@ -375,9 +421,12 @@ class DubPage(QWidget):
         return {"cover": cover, "subs": self.chk_subs.isChecked(), "look": look, "style": style, "opts": opts}
 
     def dub_audio_path(self) -> str:
+        """Tiếng lồng theo tốc độ video: 1x nằm cạnh video (tab Xuất video dùng được);
+        tốc độ khác có tên riêng trong thư mục dự án để không lẫn khi đổi tốc độ nhiều lần."""
         p = Path(self.video)
-        if abs(self.sp_vspeed.value() - 1) >= 0.005:   # tiếng đã đổi tốc độ: không khớp video gốc
-            return str(Path(self.workdir) / f"{p.stem}.vi.dub.m4a")
+        vs = round(self.sp_vspeed.value(), 2)
+        if abs(vs - 1) >= 0.005:
+            return str(Path(self.workdir) / f"{p.stem}.vi.dub.{vs:g}x.m4a")
         return str(Path(self.workdir).parent / f"{p.stem}.vi.dub.m4a")
 
     def dub_video_path(self) -> str:
@@ -883,7 +932,9 @@ class DubPage(QWidget):
         if mode in ("voice", "export") and not self.project.lines:
             return QMessageBox.information(self, "Chưa có câu thoại", "Bấm “Làm tự động” trước để có câu thoại và nhân vật.")
         if mode == "export" and not os.path.exists(self.dub_audio_path()):
-            return QMessageBox.information(self, "Chưa có tiếng lồng", "Bấm “Đọc giọng & trộn” trước.")
+            return QMessageBox.information(self, "Chưa có tiếng lồng",
+                                           f"Chưa có tiếng lồng ở tốc độ {self.sp_vspeed.value():g}x. "
+                                           "Bấm “Đọc giọng & trộn” trước.")
         if mode in ("auto",):
             try:
                 self.providers()

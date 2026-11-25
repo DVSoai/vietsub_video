@@ -23,13 +23,9 @@ from pathlib import Path
 import numpy as np
 
 from . import srt
-from .vocal import load_audio, save_wav
+from .vocal import Stopped, load_audio, save_wav  # Stopped dùng chung: dừng khi tách giọng cũng nhận ra
 
 SR = 48000
-
-
-class Stopped(Exception):
-    pass
 
 
 # ====================================================================== dữ liệu dự án
@@ -311,31 +307,51 @@ class MixOptions:
 
 
 def fit_lines(lines: list[Line], wavs: dict[int, np.ndarray], max_speed: float, sr: int = SR,
-              log=print) -> dict[int, np.ndarray]:
-    """Tăng tốc câu đọc dài hơn khoảng trống tới câu sau (tối đa max_speed)."""
-    out, over = {}, 0
-    for i, l in enumerate(lines):
-        w = wavs.get(l.index)
-        if w is None or not len(w):
-            continue
-        w = trim_silence(w, sr)
-        nxt = lines[i + 1].start if i + 1 < len(lines) else l.end + 1.5
-        slot = max(l.end - l.start, nxt - l.start - 0.08)
+              log=print, max_push: float = 0.6, gap: float = 0.06) -> tuple[dict[int, np.ndarray], dict[int, float]]:
+    """Khớp từng câu vào thời gian của nó, không để hai câu chồng lên nhau.
+
+    1) câu dài hơn chỗ trống -> đọc nhanh lên (tối đa max_speed)
+    2) vẫn dài -> câu sau được lùi lại tối đa max_push giây so với bản gốc
+    3) vẫn dài -> cắt đuôi câu kèm mờ dần 120 ms (ghi log để sửa câu ngắn lại)
+    Trả (wav đã khớp, giây bắt đầu thực tế của từng câu)."""
+    order = [l for l in sorted(lines, key=lambda x: x.start) if wavs.get(l.index) is not None and len(wavs[l.index])]
+    out, starts = {}, {}
+    sped, pushed, cut = 0, 0, []
+    prev_end = -1.0
+    for i, l in enumerate(order):
+        w = trim_silence(wavs[l.index], sr)
+        st = max(l.start, prev_end + gap)
+        if st > l.start + 0.01:
+            pushed += 1
+        nxt = order[i + 1].start + max_push if i + 1 < len(order) else st + (len(w) / sr) + 10
+        slot = max(0.3, max(l.end, nxt - max_push) - st)   # khoảng lý tưởng: tới đầu câu sau
+        limit = max(0.3, nxt - st - gap)                  # khoảng tối đa: tới câu sau đã lùi hết mức
         dur = len(w) / sr
         if dur > slot:
             f = min(dur / slot, max_speed)
-            w = tempo(w, f, sr)
-            if len(w) / sr > slot + 0.05:
-                over += 1
+            if f > 1.02:
+                w = tempo(w, f, sr); sped += 1
+        if len(w) / sr > limit:
+            n = int(limit * sr)
+            k = min(int(0.12 * sr), n)
+            w = w[:n].copy()
+            if k > 1:
+                w[-k:] *= np.linspace(1, 0, k, dtype=np.float32)
+            cut.append(l.index)
         out[l.index] = w
-    if over:
-        log(f"  ⚠ {over} câu vẫn dài hơn khoảng thời gian dù đã đọc nhanh {max_speed}x (sẽ lấn nhẹ sang câu sau). "
-            "Có thể sửa câu ngắn lại rồi tạo lại.")
-    return out
+        starts[l.index] = st
+        prev_end = st + len(w) / sr
+    if pushed:
+        log(f"  {pushed} câu được lùi lại một chút (≤{max_push:.1f}s) để không chồng lên câu trước")
+    if cut:
+        log(f"  ⚠ {len(cut)} câu quá dài dù đã đọc nhanh {max_speed}x nên bị cắt đuôi: "
+            + ", ".join(f"#{i}" for i in cut[:15]) + (" …" if len(cut) > 15 else "")
+            + ". Hãy sửa các câu này ngắn lại ở bảng Câu thoại rồi bấm “Tạo lại câu đã chọn”.")
+    return out, starts
 
 
 def mix(lines: list[Line], voice: dict[int, np.ndarray], bg: np.ndarray, opt: MixOptions, sr: int = SR,
-        gains: dict[int, float] | None = None) -> np.ndarray:
+        gains: dict[int, float] | None = None, starts: dict[int, float] | None = None) -> np.ndarray:
     """bg [2, n] -> [2, n] đã trộn giọng Việt."""
     n = bg.shape[1]
     track = np.zeros(n, np.float32)
@@ -344,7 +360,7 @@ def mix(lines: list[Line], voice: dict[int, np.ndarray], bg: np.ndarray, opt: Mi
         w = voice.get(l.index)
         if w is None:
             continue
-        a = int(l.start * sr)
+        a = int((starts or {}).get(l.index, l.start) * sr)
         if a >= n:
             continue
         b = min(n, a + len(w))
@@ -390,7 +406,31 @@ def scale_lines(lines: list[Line], speed: float) -> list[Line]:
     return [replace(l, start=l.start / speed, end=l.end / speed) for l in lines]
 
 
-def mux_video(video: str, audio: str, out: str, speed: float = 1.0):
+def _run_stoppable(args: list[str], stop: threading.Event | None) -> tuple[int, str]:
+    """Chạy ffmpeg; dừng được ngay khi stop được bật (ffmpeg nhận 'q' rồi mới bị giết)."""
+    proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            creationflags=_flags())
+    err: list[bytes] = []
+    t = threading.Thread(target=lambda: err.append(proc.stderr.read()), daemon=True)
+    t.start()
+    while proc.poll() is None:
+        if stop is not None and stop.wait(0.2):
+            try:
+                proc.stdin.write(b"q"); proc.stdin.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.wait(3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise Stopped()
+        elif stop is None:
+            proc.wait()
+    t.join(2)
+    return proc.returncode, b"".join(err).decode("utf-8", "replace")
+
+
+def mux_video(video: str, audio: str, out: str, speed: float = 1.0, stop: threading.Event | None = None):
     """Thay tiếng của video bằng file lồng tiếng. speed != 1: đổi tốc độ hình (phải nén lại hình)."""
     base = [_ffmpeg(), "-v", "error", "-y", "-i", video, "-i", audio, "-map", "0:v:0", "-map", "1:a:0"]
     tail = ["-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out]
@@ -400,12 +440,13 @@ def mux_video(video: str, audio: str, out: str, speed: float = 1.0):
         vf = ["-filter:v", f"setpts=PTS/{speed:.4f}"]
         tries = [vf + ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21", "-pix_fmt", "yuv420p"],
                  vf + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]]
+    code, err = 1, ""
     for t in tries:
-        r = subprocess.run(base + t + tail, capture_output=True, creationflags=_flags())
-        if r.returncode == 0:
+        code, err = _run_stoppable(base + t + tail, stop)
+        if code == 0:
             return
-    if r.returncode != 0:
-        raise RuntimeError("ffmpeg ghép video lỗi: " + r.stderr.decode("utf-8", "replace")[-300:])
+    if code != 0:
+        raise RuntimeError("ffmpeg ghép video lỗi: " + err[-300:])
 
 
 # ====================================================================== đọc tất cả câu (có cache)
@@ -441,3 +482,4 @@ def synth_lines(engine: TTSEngine, proj: Project, cache_dir: str, log=print,
 def line_cache_path(proj: Project, l: Line, cache_dir: str) -> str:
     ch = proj.char(l.speaker)
     return os.path.join(cache_dir, line_key(emotion_text(l.text, l.emotion), ch.voice if ch else "") + ".wav")
+

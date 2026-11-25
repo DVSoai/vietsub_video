@@ -523,7 +523,8 @@ class RenderPage(QWidget):
         self.boxc_wrap.setVisible(m == 2)
         for w in (self.sp_cy, self.sp_ch, self.sp_cx, self.btn_fit):
             w.setEnabled(m != 0)
-        reframed = hasattr(self, "lk_aspect") and bool(self.lk_aspect.currentData())
+        # vùng che áp trên khung gốc: khi đổi khung/phóng to, ảnh xem trước không còn trùng toạ độ gốc
+        reframed = hasattr(self, "lk_aspect") and (bool(self.lk_aspect.currentData()) or self.lk_zoom.value() > 100)
         self.preview.cover_rect = None if (m == 0 or reframed) else (
             self.sp_cx.value(), self.sp_cy.value(), 100 - 2 * self.sp_cx.value(), self.sp_ch.value())
         self.preview._redraw()

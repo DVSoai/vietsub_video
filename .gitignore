@@ -4,3 +4,4 @@ dist/
 *.spec
 data/settings.json
 data/models/
+tests/qa_data/
