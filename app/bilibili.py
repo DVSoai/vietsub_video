@@ -292,6 +292,8 @@ class DownloadJob:
     out_dir: str
     quality: str = "Cao nhất có thể"
     cover: bool = False            # tải kèm ảnh bìa
+    auto_title: bool = False       # chưa biết tên -> lấy tiêu đề gốc từ trang (trang ngoài Bilibili)
+    cookies_browser: str = ""      # "firefox" | "edge" | "chrome" | "" (Douyin hay cần)
     state: str = "queued"          # queued | running | done | error | stopped
     pct: float = 0.0
     info: str = ""
@@ -478,12 +480,20 @@ class Downloader:
             job.state, job.info = "error", "Thiếu yt-dlp: chạy  pip install yt-dlp"
             return
         last = [0.0]
+        if not re.search(r"(bilibili\.com|b23\.tv)", job.url):
+            from .sources import expand
+            full = expand(job.url)
+            if full != job.url:
+                self.log(f"  Link rút gọn → {full}")
+                job.url = full
 
         def hook(d):
             if self.stop_event.is_set():
                 raise yt_dlp.utils.DownloadCancelled("Đã dừng")
             st = d.get("status")
             fn = d.get("filename", "")
+            if job.auto_title and (d.get("info_dict") or {}).get("title"):
+                job.title, job.auto_title = d["info_dict"]["title"][:120], False
             if st == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 done = d.get("downloaded_bytes") or 0
@@ -508,8 +518,11 @@ class Downloader:
                 self.on_update(job)
 
         # tên file = tên hiển thị trong app (đã dịch nếu có) + mã video -> mỗi tập một tên riêng
-        name = re.sub(r'[\\/:*?"<>|\r\n\t]', " ", job.title).strip()[:90] or "%(title).90B"
-        name = name.replace("%", "%%") if name != "%(title).90B" else name
+        if job.auto_title:
+            name = "%(title).80B"
+        else:
+            name = re.sub(r'[\\/:*?"<>|\r\n\t]', " ", job.title).strip()[:90] or "%(title).80B"
+            name = name.replace("%", "%%") if name != "%(title).80B" else name
         opts = {
             "format": QUALITIES.get(job.quality, "bv*+ba/b"),
             "outtmpl": os.path.join(job.out_dir, name + " [%(id)s].%(ext)s"),
@@ -526,7 +539,12 @@ class Downloader:
         if ff:
             opts["ffmpeg_location"] = ff
         cookie_file = None
-        if self.bili and self.bili.s.cookies:
+        is_bili = bool(re.search(r"(bilibili\.com|b23\.tv)", job.url))
+        if not is_bili:
+            opts["http_headers"] = {"User-Agent": UA}
+        if job.cookies_browser:
+            opts["cookiesfrombrowser"] = (job.cookies_browser,)
+        elif is_bili and self.bili and self.bili.s.cookies:
             import tempfile
             from http.cookiejar import MozillaCookieJar
             cookie_file = os.path.join(tempfile.gettempdir(), f"st_bili_cookies_{os.getpid()}.txt")
@@ -551,4 +569,8 @@ class Downloader:
                 job.state, job.info = "stopped", "Đã dừng"
             else:
                 msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
+                if re.search(r"cookie", msg, re.I) and not job.cookies_browser:
+                    msg += "  → Trang này cần cookie: ở mục Cookie chọn trình duyệt bạn hay dùng (nên dùng Firefox) rồi tải lại."
+                elif re.search(r"cookie|decrypt|DPAPI|App-Bound", msg, re.I) and job.cookies_browser == "chrome":
+                    msg += "  → Chrome mới khóa cookie, hãy thử Firefox hoặc Edge."
                 job.state, job.info = "error", msg

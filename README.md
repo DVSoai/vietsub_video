@@ -15,9 +15,17 @@ App desktop dịch phụ đề `.srt` bằng AI (Gemini, Vertex AI, Claude, Open
 
 Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator.exe`. Có thể copy file này đi bất kỳ đâu. Cấu hình và prompt được lưu trong thư mục `data\` nằm cạnh file exe.
 
-## Tìm & tải phim (Bilibili)
+## Tìm & tải phim (Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun)
 
-Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoản Bilibili.
+Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoản.
+
+**Chọn nguồn** ở ô đầu tiên:
+- **Bilibili:** tìm và tải ngay trong app (các bước bên dưới).
+- **Douyin (抖音), Tây Qua (西瓜视频), Weibo, Tiểu Hồng Thư (小红书), AcFun:** gõ từ khóa rồi bấm **Mở trang tìm**. App mở trang tìm kiếm của trang đó trên trình duyệt (phần tìm kiếm của các trang này chặn công cụ tự động). Bạn chọn phim, chép link hoặc cả đoạn chữ chia sẻ trong app, rồi dán vào ô **Dán link…** và bấm **Tải link này**. Link rút gọn (`v.douyin.com`, `xhslink.com`) được tự mở thành link đầy đủ. Video được lưu vào thư mục con mang tên trang.
+- Douyin hay đòi cookie: nếu báo lỗi cookie, chọn trình duyệt ở mục **Cookie trình duyệt** (nên dùng Firefox, vì Chrome bản mới khóa cookie) rồi tải lại.
+- Không hỗ trợ YouTube và các trang phim VIP có mã hóa (Youku, iQiyi, Tencent Video, Mango TV, Hồng Quả).
+
+Với Bilibili:
 
 1. Gõ từ khóa tiếng Trung, ví dụ `仙侠短剧`, hoặc bấm một gợi ý có sẵn. Nếu chỉ biết tiếng Việt thì gõ tiếng Việt (ví dụ "phim tu tiên ngắn") rồi bấm **VI→中**: AI sẽ đổi sang từ khóa tiếng Trung và tìm luôn.
 2. Lọc theo **sắp xếp** (liên quan nhất, xem nhiều, mới đăng…) và **thời lượng**. Bấm Trang trước / Trang sau để xem thêm (tối đa 50 trang, mỗi trang 20 video).
@@ -101,6 +109,7 @@ Font: app liệt kê font trong Windows và trong thư mục `fonts` cạnh app.
 | `app/transcribe.py` | Tách tiếng bằng ffmpeg, cắt đoạn theo chỗ im lặng, cho Gemini trên Vertex nghe và chép lời |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
 | `app/bilibili.py` | Tìm kiếm Bilibili (cookie khách buvid3, WBI dự phòng), danh sách tập, tải bằng yt-dlp |
+| `app/sources.py` | Danh sách trang được hỗ trợ, lấy link từ đoạn chữ chia sẻ, mở link rút gọn |
 | `app/search_page.py` | Tab Tìm & tải phim |
 | `app/gui.py` | Giao diện PySide6 (khung chính, trang Dịch phụ đề) |
 | `app/render.py` | Xuất video: SRT → ASS (kiểu chữ), che chữ cứng (làm mờ / hộp), xem trước một khung hình, nén x264/NVENC |

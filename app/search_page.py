@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .sources import SITES, extract, search_url
 from .bilibili import (
     DURATIONS, ORDERS, QUALITIES, Bili, BiliError, DownloadJob, Downloader, Part, Video, fmt_count,
 )
@@ -283,21 +284,25 @@ class SearchPage(QWidget):
         self.cb_quality.setCurrentText(st.get("quality", "Cao nhất có thể"))
         self.chk_tr.setChecked(st.get("translate_titles", True))
         self.chk_cover.setChecked(st.get("cover", False))
+        self.cb_cookie.setCurrentText(st.get("cookie", "Không dùng"))
+        if st.get("site") in SITES:
+            self.cb_site.setCurrentText(st["site"])
         if self.cb_quality.currentIndex() < 0:
             self.cb_quality.setCurrentIndex(0)
 
     # ------------------------------------------------------------ giao diện
     def _build(self):
         # ---- thanh tìm kiếm
-        top, tv = _card("Tìm phim trên Bilibili", None)
+        top, tv = _card("Tìm phim", None)
         self.ed_q = QLineEdit(); self.ed_q.setObjectName("searchBox")
         self.ed_q.setPlaceholderText("Nhập từ khóa tiếng Trung (vd: 仙侠短剧) — hoặc gõ tiếng Việt rồi bấm VI→中")
         self.btn_vi = _btn("VI→中", "ghost", "Nhờ AI dịch từ khóa tiếng Việt sang tiếng Trung")
+        self.cb_site = QComboBox(); self.cb_site.addItems(SITES); self.cb_site.setToolTip("Chọn trang để tìm phim")
         self.cb_order = QComboBox(); self.cb_order.addItems(ORDERS)
         self.cb_dur = QComboBox(); self.cb_dur.addItems(DURATIONS)
         self.btn_go = _btn("🔍  Tìm", "primary")
         r1 = QHBoxLayout(); r1.setSpacing(8)
-        r1.addWidget(self.ed_q, 1); r1.addWidget(self.btn_vi); r1.addWidget(self.cb_order)
+        r1.addWidget(self.cb_site); r1.addWidget(self.ed_q, 1); r1.addWidget(self.btn_vi); r1.addWidget(self.cb_order)
         r1.addWidget(self.cb_dur); r1.addWidget(self.btn_go)
         r2 = QHBoxLayout(); r2.setSpacing(6)
         lab = QLabel("Gợi ý:"); lab.setObjectName("hint"); r2.addWidget(lab)
@@ -309,7 +314,7 @@ class SearchPage(QWidget):
         self.chk_tr = QCheckBox("Dịch tiêu đề sang tiếng Việt (dùng nhà cung cấp AI ở tab Dịch phụ đề)")
         r2.addWidget(self.chk_tr)
         self.ed_link = QLineEdit()
-        self.ed_link.setPlaceholderText("Hoặc dán link để tải luôn: bilibili.com/video/BV…, b23.tv/…, BV1xx…, av123…")
+        self.ed_link.setPlaceholderText("Dán link hoặc cả đoạn chữ chia sẻ: Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun…")
         self.btn_link = _btn("⬇  Tải link này", "ghost")
         r0 = QHBoxLayout(); r0.setSpacing(8); r0.addWidget(self.ed_link, 1); r0.addWidget(self.btn_link)
         tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r0)
@@ -346,6 +351,9 @@ class SearchPage(QWidget):
                             "Không cần đăng nhập vẫn tải được tới 1080p (1080P+, 4K, 60fps chỉ dành cho VIP)"))
         self.chk_cover = QCheckBox("Tải kèm ảnh bìa (.jpg)")
         sv.addWidget(self.chk_cover)
+        self.cb_cookie = QComboBox(); self.cb_cookie.addItems(["Không dùng", "Firefox", "Edge", "Chrome"])
+        sv.addLayout(_field("Cookie trình duyệt (cho Douyin…)", self.cb_cookie,
+                            "Chỉ cần khi trang báo đòi cookie. Không dùng cho Bilibili."))
         self.q_host = QWidget(); self.q_lay = QVBoxLayout(self.q_host)
         self.q_lay.setContentsMargins(0, 0, 0, 0); self.q_lay.setSpacing(8); self.q_lay.addStretch(1)
         self.q_empty = QLabel("Chưa có phim nào. Bấm “⬇ Tải” ở một kết quả."); self.q_empty.setObjectName("hint")
@@ -371,6 +379,7 @@ class SearchPage(QWidget):
         self.ed_q.returnPressed.connect(lambda: self._search(1))
         self.btn_vi.clicked.connect(self._vi_to_zh)
         self.btn_link.clicked.connect(self._from_link)
+        self.cb_site.currentTextChanged.connect(self._on_site)
         self.ed_link.returnPressed.connect(self._from_link)
         self.btn_prev.clicked.connect(lambda: self._search(self.page - 1))
         self.btn_next.clicked.connect(lambda: self._search(self.page + 1))
@@ -382,11 +391,39 @@ class SearchPage(QWidget):
             w.currentIndexChanged.connect(lambda _=0: self.keyword and self._search(1))
         self._update_pager()
 
+    # ------------------------------------------------------------ nguồn
+    def _on_site(self, site: str):
+        inapp = SITES[site]["search"] is None
+        self.cb_order.setEnabled(inapp); self.cb_dur.setEnabled(inapp)
+        self.btn_go.setText("🔍  Tìm" if inapp else "🌐  Mở trang tìm")
+        if inapp:
+            self.ed_q.setPlaceholderText("Nhập từ khóa tiếng Trung (vd: 仙侠短剧) — hoặc gõ tiếng Việt rồi bấm VI→中")
+        else:
+            self.ed_q.setPlaceholderText(f"Gõ từ khóa rồi bấm “Mở trang tìm”: chọn phim trên {site}, chép link, dán vào ô bên dưới")
+            note = SITES[site].get("note", "")
+            self.lb_count.setText(note)
+        if not self.cards:
+            self.empty.setText("Nhập từ khóa rồi bấm Tìm, hoặc bấm một gợi ý ở trên." if inapp else
+                               f"Với {site}: gõ từ khóa → bấm “Mở trang tìm” → chọn phim trên trình duyệt → "
+                               "chép link (hoặc cả đoạn chữ chia sẻ) → dán vào ô “Dán link…” ở trên.")
+            self.empty.setWordWrap(True)
+        self._store()
+
+    def _open_site_search(self, kw: str):
+        site = self.cb_site.currentText()
+        url = search_url(site, kw)
+        webbrowser.open(url)
+        self.lb_count.setText(f"Đã mở trang tìm {site} trên trình duyệt. Chọn phim → chép link → dán vào ô “Dán link…” bên dưới.")
+        self.ed_link.setFocus()
+
     # ------------------------------------------------------------ tìm kiếm
     def _search(self, page: int):
         kw = self.ed_q.text().strip()
         if not kw:
             self.ed_q.setFocus()
+            return
+        if SITES[self.cb_site.currentText()]["search"] is not None:
+            self._open_site_search(kw)
             return
         if self._search_job and self._search_job.isRunning():
             return
@@ -537,10 +574,27 @@ class SearchPage(QWidget):
         text = self.ed_link.text().strip()
         if not text:
             return
+        try:
+            url, site = extract(text)
+        except ValueError as e:
+            self.lb_count.setText(f"✖ {e}")
+            return
+        if site != "Bilibili":
+            out = os.path.join(self.ed_out.text().strip() or str(Path.home() / "Videos" / "Bilibili"),
+                               site.split(" (")[0])
+            cb = self.cb_cookie.currentText().lower()
+            job = DownloadJob(url, f"{site}: {url[:60]}", out, self.cb_quality.currentText(),
+                              auto_title=True, cookies_browser="" if cb.startswith("không") else cb)
+            self._enqueue(job)
+            self.ed_link.clear()
+            self.lb_count.setText(f"Đã thêm vào hàng chờ ({site}). {SITES[site].get('note', '')}")
+            self._store()
+            return
+        text = url
         self.btn_link.setEnabled(False)
         self.lb_count.setText("đang đọc link…")
 
-        def work():
+        def work(text=text):
             bvid, p = self.bili.resolve(text)
             meta = self.bili.video_meta(bvid)
             return bvid, p, meta
@@ -660,7 +714,8 @@ class SearchPage(QWidget):
     # ------------------------------------------------------------ lưu / tắt
     def _store(self):
         self.cfg["search"] = {"out_dir": self.ed_out.text().strip(), "quality": self.cb_quality.currentText(),
-                              "translate_titles": self.chk_tr.isChecked(), "cover": self.chk_cover.isChecked()}
+                              "translate_titles": self.chk_tr.isChecked(), "cover": self.chk_cover.isChecked(),
+                              "site": self.cb_site.currentText(), "cookie": self.cb_cookie.currentText()}
 
     def store_state(self):
         self._store()
