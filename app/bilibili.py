@@ -193,6 +193,73 @@ class Bili:
             return season.get("title") or title, out
         return title, [Part(f"{self.web}/video/{bvid}", title, int(d.get("duration") or 0), 1)]
 
+    # ---------------------------------------------------------- dán link
+    def resolve(self, text: str) -> tuple[str, int]:
+        """Link thường / b23.tv / BV… / av… -> (bvid, số phần p; 0 = không chỉ định)."""
+        t = text.strip()
+        m = re.search(r"(https?://)?(b23\.tv|bili2233\.cn)/[\w-]+", t)
+        if m:
+            short = m.group(0) if m.group(1) else "https://" + m.group(0)
+            try:
+                r = self.s.get(short, timeout=15, allow_redirects=True)
+                t = r.url
+            except requests.RequestException as e:
+                raise BiliError(f"Không mở được link rút gọn: {e}") from e
+        p = 0
+        mp = re.search(r"[?&]p=(\d+)", t)
+        if mp:
+            p = int(mp.group(1))
+        mb = re.search(r"BV[0-9A-Za-z]{10}", t)
+        if mb:
+            return mb.group(0), p
+        ma = re.search(r"\bav(\d+)", t, re.I)
+        if ma:
+            data = self._get("/x/web-interface/view", {"aid": ma.group(1)})
+            if data.get("code") == 0:
+                return data["data"]["bvid"], p
+        raise BiliError("Không nhận ra link Bilibili. Dán link video, link b23.tv, mã BV… hoặc av…")
+
+    def video_meta(self, bvid: str) -> dict:
+        data = self._get("/x/web-interface/view", {"bvid": bvid})
+        if data.get("code") != 0:
+            raise BiliError(f"Không lấy được thông tin video (mã {data.get('code')}: {data.get('message')})")
+        return data["data"]
+
+    def streams(self, bvid: str, cid: int, max_h: int = 4320) -> dict:
+        """Chọn luồng hình (ưu tiên H.264) + luồng tiếng tốt nhất mà khách được xem."""
+        params = {"bvid": bvid, "cid": cid, "qn": 80, "fnval": 4048, "fnver": 0, "fourk": 1}
+        data = self._get("/x/player/playurl", params)
+        if data.get("code") in (-412, -352, -403):
+            data = self._get("/x/player/wbi/playurl", self._sign(params))
+        if data.get("code") != 0:
+            raise BiliError(f"Bilibili không cho lấy luồng phát (mã {data.get('code')}: {data.get('message')})")
+        d = data.get("data") or {}
+        dash = d.get("dash")
+        if not dash:
+            durl = d.get("durl") or []
+            if not durl:
+                raise BiliError("Video không có luồng phát cho khách (có thể cần đăng nhập/VIP)")
+            u = durl[0]
+            return {"single": [u.get("url")] + (u.get("backup_url") or []), "height": 0}
+
+        def urls(x):
+            return [u for u in [x.get("baseUrl") or x.get("base_url")] + (x.get("backupUrl") or x.get("backup_url") or []) if u]
+        vids = [v for v in dash.get("video") or [] if urls(v)]
+        ok = [v for v in vids if (v.get("height") or 0) <= max_h] or vids
+        if not ok:
+            raise BiliError("Không có luồng hình nào")
+        best_h = max(v.get("height") or 0 for v in ok)
+        same = [v for v in ok if (v.get("height") or 0) == best_h]
+        avc = [v for v in same if str(v.get("codecs", "")).startswith("avc")]
+        v = max(avc or same, key=lambda x: x.get("bandwidth") or 0)
+        auds = [a for a in (dash.get("audio") or []) if urls(a)]
+        flac = ((dash.get("flac") or {}).get("audio"))
+        if flac and urls(flac):
+            auds.append(flac)
+        a = max(auds, key=lambda x: x.get("bandwidth") or 0) if auds else None
+        return {"video": urls(v), "audio": urls(a) if a else [], "height": best_h,
+                "codec": str(v.get("codecs", "")), "duration": int(dash.get("duration") or 0)}
+
     def image(self, url: str) -> bytes:
         """Ảnh bìa (bản thu nhỏ của máy chủ ảnh Bilibili cho nhẹ)."""
         if "hdslb.com" in url and "@" not in url:
@@ -212,8 +279,9 @@ QUALITIES = {
     "Cao nhất có thể": "bv*+ba/b",
     "Tối đa 720p": "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b",
     "Tối đa 480p": "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b",
-    "Chỉ âm thanh": "ba/b",
+    "Chỉ âm thanh (.m4a)": "ba/b",
 }
+MAX_H = {"Cao nhất có thể": 4320, "Tối đa 720p": 720, "Tối đa 480p": 480, "Chỉ âm thanh (.m4a)": 4320}
 
 
 @dataclass
@@ -222,6 +290,7 @@ class DownloadJob:
     title: str
     out_dir: str
     quality: str = "Cao nhất có thể"
+    cover: bool = False            # tải kèm ảnh bìa
     state: str = "queued"          # queued | running | done | error | stopped
     pct: float = 0.0
     info: str = ""
@@ -229,12 +298,169 @@ class DownloadJob:
     _phase: dict = field(default_factory=dict)
 
 
-class Downloader:
-    """Tải tuần tự từng job bằng yt-dlp; gọi on_update(job) mỗi khi có thay đổi."""
+class _Stopped(Exception):
+    pass
 
-    def __init__(self, on_update=lambda job: None, log=print):
+
+def _safe_name(t: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\r\n\t]', " ", t).strip()[:90]
+
+
+class Downloader:
+    """Tải từng job. Link Bilibili: tải thẳng qua API phát video (dùng cookie khách của app);
+    hỏng thì thử yt-dlp. Gọi on_update(job) mỗi khi có thay đổi."""
+
+    def __init__(self, on_update=lambda job: None, log=print, bili: "Bili | None" = None):
         self.on_update, self.log = on_update, log
         self.stop_event = threading.Event()
+        self.bili = bili
+
+    # ------------------------------------------------------------ chung
+    def run(self, job: DownloadJob):
+        os.makedirs(job.out_dir, exist_ok=True)
+        job.state, job.info, job.pct, job._phase = "running", "Đang lấy thông tin…", 0.0, {}
+        self.on_update(job)
+        errs = []
+        if self.bili and re.search(r"BV[0-9A-Za-z]{10}", job.url):
+            try:
+                self._run_native(job)
+                self.on_update(job)
+                return
+            except _Stopped:
+                job.state, job.info = "stopped", "Đã dừng"
+                self.on_update(job)
+                return
+            except Exception as e:  # noqa: BLE001
+                errs.append(f"API: {e}")
+                self.log(f"  ⚠ Tải qua API lỗi ({job.title}): {e} → thử yt-dlp")
+                job.info, job.pct, job._phase = "Thử cách khác (yt-dlp)…", 0.0, {}
+                self.on_update(job)
+        self._run_ytdlp(job)
+        if job.state == "error" and errs:
+            job.info = " | ".join(errs + [f"yt-dlp: {job.info}"])
+        self.on_update(job)
+
+    # ------------------------------------------------------------ cách 1: API phát video
+    def _http(self):
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA, "Referer": WEB + "/", "Origin": WEB})
+        if self.bili:
+            s.cookies.update(self.bili.s.cookies)
+        return s
+
+    def _fetch(self, sess, urls: list[str], dst: str, job: DownloadJob, key: str):
+        last = None
+        for attempt in range(3):
+            for u in urls:
+                if self.stop_event.is_set():
+                    raise _Stopped()
+                try:
+                    have = os.path.getsize(dst) if os.path.exists(dst) else 0
+                    hdr = {"Range": f"bytes={have}-"} if have else {}
+                    with sess.get(u, headers=hdr, stream=True, timeout=30) as r:
+                        if r.status_code == 416:
+                            return
+                        if r.status_code not in (200, 206):
+                            raise BiliError(f"HTTP {r.status_code}")
+                        if r.status_code == 200:
+                            have = 0
+                        total = have + int(r.headers.get("content-length") or 0)
+                        mode = "ab" if have and r.status_code == 206 else "wb"
+                        done, t0, last_ui = have, time.monotonic(), 0.0
+                        with open(dst, mode) as f:
+                            for chunk in r.iter_content(1 << 18):
+                                if self.stop_event.is_set():
+                                    raise _Stopped()
+                                f.write(chunk)
+                                done += len(chunk)
+                                job._phase[key] = (done, total)
+                                now = time.monotonic()
+                                if now - last_ui > 0.3:
+                                    last_ui = now
+                                    self._progress(job, key, (done - have) / max(0.001, now - t0))
+                    if total and os.path.getsize(dst) < total:
+                        raise BiliError("tải chưa đủ dữ liệu")
+                    return
+                except _Stopped:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    last = e
+            time.sleep(1.5 * (attempt + 1))
+        raise BiliError(f"Không tải được luồng {key}: {last}")
+
+    def _progress(self, job, key, speed):
+        tot = sum(t for _, t in job._phase.values() if t)
+        got = sum(min(a, t) if t else a for a, t in job._phase.values())
+        job.pct = min(99.0, got * 100 / tot) if tot else job.pct
+        a, t = job._phase[key]
+        eta = (t - a) / speed if speed > 0 and t else 0
+        label = {"video": "hình", "audio": "tiếng"}.get(key, "")
+        job.info = (f"Đang tải {label} " if label else "Đang tải ") + \
+            f"{a / 1e6:.1f}/{t / 1e6:.1f} MB · {speed / 1e6:.2f} MB/s" + \
+            (f" · còn {int(eta) // 60}:{int(eta) % 60:02d}" if eta else "")
+        self.on_update(job)
+
+    def _run_native(self, job: DownloadJob):
+        bvid = re.search(r"BV[0-9A-Za-z]{10}", job.url).group(0)
+        mp = re.search(r"[?&]p=(\d+)", job.url)
+        p = int(mp.group(1)) if mp else 1
+        meta = self.bili.video_meta(bvid)
+        pages = meta.get("pages") or []
+        page = next((x for x in pages if x.get("page") == p), pages[0] if pages else None)
+        cid = (page or {}).get("cid") or meta.get("cid")
+        if not cid:
+            raise BiliError("Không tìm thấy cid của video")
+        audio_only = job.quality.startswith("Chỉ âm thanh")
+        st = self.bili.streams(bvid, cid, MAX_H.get(job.quality, 4320))
+        base = os.path.join(job.out_dir, f"{_safe_name(job.title) or bvid} [{bvid}" + (f"_p{p}" if len(pages) > 1 else "") + "]")
+        out = base + (".m4a" if audio_only else ".mp4")
+        if os.path.exists(out) and os.path.getsize(out) > 0:
+            job.file, job.state, job.pct, job.info = out, "done", 100.0, f"Đã có sẵn · {os.path.basename(out)}"
+            return
+        sess = self._http()
+        tmp_v, tmp_a = base + ".video.part", base + ".audio.part"
+        if "single" in st:
+            self._fetch(sess, st["single"], tmp_v, job, "file")
+            os.replace(tmp_v, out)
+        else:
+            if not audio_only:
+                self._fetch(sess, st["video"], tmp_v, job, "video")
+            if st["audio"]:
+                self._fetch(sess, st["audio"], tmp_a, job, "audio")
+            job.info = "Đang ghép hình và tiếng…"
+            self.on_update(job)
+            self._merge(tmp_v if not audio_only else None, tmp_a if st["audio"] else None, out)
+            for t in (tmp_v, tmp_a):
+                if os.path.exists(t):
+                    os.remove(t)
+        if job.cover and meta.get("pic"):
+            try:
+                with open(base + ".jpg", "wb") as f:
+                    f.write(sess.get(meta["pic"], timeout=20).content)
+            except Exception:  # noqa: BLE001
+                pass
+        job.file, job.state, job.pct = out, "done", 100.0
+        job.info = f"Xong · {os.path.basename(out)}" + (f" · {st['height']}p" if st.get("height") and not audio_only else "")
+
+    def _merge(self, video: str | None, audio: str | None, out: str):
+        import subprocess
+        import sys as _sys
+        ff = self._ffmpeg()
+        if not ff:
+            raise BiliError("Không có ffmpeg để ghép hình và tiếng")
+        args = [ff, "-hide_banner", "-loglevel", "error", "-y"]
+        for x in (video, audio):
+            if x:
+                args += ["-i", x]
+        args += ["-c", "copy"]
+        if video and audio:
+            args += ["-map", "0:v:0", "-map", "1:a:0"]
+        args += ["-movflags", "+faststart", out]
+        flags = 0x08000000 if _sys.platform == "win32" else 0
+        r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           creationflags=flags)
+        if r.returncode != 0:
+            raise BiliError("ffmpeg ghép lỗi: " + r.stderr.strip()[-300:])
 
     def _ffmpeg(self) -> str | None:
         try:
@@ -243,16 +469,13 @@ class Downloader:
         except Exception:  # noqa: BLE001
             return None
 
-    def run(self, job: DownloadJob):
+    # ------------------------------------------------------------ cách 2: yt-dlp
+    def _run_ytdlp(self, job: DownloadJob):
         try:
             import yt_dlp
         except ImportError:
             job.state, job.info = "error", "Thiếu yt-dlp: chạy  pip install yt-dlp"
-            self.on_update(job)
             return
-        os.makedirs(job.out_dir, exist_ok=True)
-        job.state, job.info, job.pct = "running", "Đang lấy thông tin…", 0.0
-        self.on_update(job)
         last = [0.0]
 
         def hook(d):
@@ -289,7 +512,7 @@ class Downloader:
         opts = {
             "format": QUALITIES.get(job.quality, "bv*+ba/b"),
             "outtmpl": os.path.join(job.out_dir, name + " [%(id)s].%(ext)s"),
-            "merge_output_format": "mp4" if job.quality != "Chỉ âm thanh" else None,
+            "merge_output_format": "mp4" if not job.quality.startswith("Chỉ âm thanh") else None,
             "noplaylist": True,
             "quiet": True, "no_warnings": True, "noprogress": True,
             "progress_hooks": [hook],
@@ -301,6 +524,16 @@ class Downloader:
         ff = self._ffmpeg()
         if ff:
             opts["ffmpeg_location"] = ff
+        cookie_file = None
+        if self.bili and self.bili.s.cookies:
+            import tempfile
+            from http.cookiejar import MozillaCookieJar
+            cookie_file = os.path.join(tempfile.gettempdir(), f"st_bili_cookies_{os.getpid()}.txt")
+            jar = MozillaCookieJar(cookie_file)
+            for c in self.bili.s.cookies:
+                jar.set_cookie(c)
+            jar.save(ignore_discard=True, ignore_expires=True)
+            opts["cookiefile"] = cookie_file
         opts = {k: v for k, v in opts.items() if v is not None}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -317,5 +550,4 @@ class Downloader:
                 job.state, job.info = "stopped", "Đã dừng"
             else:
                 msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
-                job.state, job.info = "error", msg[:200]
-        self.on_update(job)
+                job.state, job.info = "error", msg

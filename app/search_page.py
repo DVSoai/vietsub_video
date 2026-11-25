@@ -11,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QMenu, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
@@ -170,8 +170,39 @@ class JobRow(QFrame):
         self.lb_title = QLabel(); self.lb_title.setObjectName("jobTitle")
         self.bar = QProgressBar(); self.bar.setFixedHeight(6)
         self.lb_info = QLabel(); self.lb_info.setObjectName("hint")
-        v.addWidget(self.lb_title); v.addWidget(self.bar); v.addWidget(self.lb_info)
+        self.lb_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lb_info.setContextMenuPolicy(Qt.NoContextMenu)
+        self.btn_copy = _btn("📋 Sao chép lỗi", "link", "Chép toàn bộ lỗi để gửi cho người hỗ trợ")
+        self.btn_copy.clicked.connect(self._copy)
+        crow = QHBoxLayout(); crow.setContentsMargins(0, 0, 0, 0); crow.addStretch(1); crow.addWidget(self.btn_copy)
+        v.addWidget(self.lb_title); v.addWidget(self.bar); v.addWidget(self.lb_info); v.addLayout(crow)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
         self.refresh()
+
+    def _copy(self):
+        j = self.job
+        QGuiApplication.clipboard().setText(f"{j.title}\n{j.url}\n{j.info}")
+        self.btn_copy.setText("✔ Đã sao chép")
+        QTimer.singleShot(1500, lambda: self.btn_copy.setText("📋 Sao chép lỗi"))
+
+    def _menu(self, pos):
+        m = QMenu(self)
+        j = self.job
+        a_err = m.addAction("Sao chép lỗi" if j.state == "error" else "Sao chép trạng thái")
+        a_url = m.addAction("Sao chép link video")
+        a_dir = m.addAction("Mở thư mục chứa file") if j.file else None
+        act = m.exec(self.mapToGlobal(pos))
+        if act == a_err:
+            self._copy()
+        elif act == a_url:
+            QGuiApplication.clipboard().setText(j.url)
+        elif a_dir is not None and act == a_dir:
+            folder = os.path.dirname(j.file)
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(j.file)])
+            else:
+                subprocess.Popen(["xdg-open", folder])
 
     def refresh(self):
         j = self.job
@@ -179,18 +210,20 @@ class JobRow(QFrame):
         _elide(self.lb_title, f"{icon}  {j.title}", 300)
         self.bar.setValue(int(j.pct))
         info = j.info or {"queued": "Đang chờ", "stopped": "Đã dừng"}.get(j.state, "")
+        self.btn_copy.setVisible(j.state == "error")
         _elide(self.lb_info, info, 300)
+        self.lb_info.setToolTip(j.info)
         color = {"done": "#21c49a", "error": "#ef5d6c", "stopped": "#f2b84b"}.get(j.state, "")
         self.lb_info.setStyleSheet(f"color:{color}" if color else "")
 
 
 # ====================================================================== luồng tải
 class DownloadThread(QThread):
-    def __init__(self, bus: _Bus, log):
+    def __init__(self, bus: _Bus, log, bili: Bili):
         super().__init__()
         self.q: "queue.Queue[DownloadJob]" = queue.Queue()
         self.bus = bus
-        self.dl = Downloader(on_update=lambda j: bus.job.emit(j), log=log)
+        self.dl = Downloader(on_update=lambda j: bus.job.emit(j), log=log, bili=bili)
         self._quit = False
 
     def add(self, job: DownloadJob):
@@ -242,13 +275,16 @@ class SearchPage(QWidget):
         self.bus.image.connect(self._on_image)
         self.bus.job.connect(self._on_job)
         self.rows: dict[int, JobRow] = {}
-        self.dthread = DownloadThread(self.bus, log)
+        self.dthread = DownloadThread(self.bus, log, self.bili)
         self.dthread.start()
         self._build()
         st = self.cfg.get("search", {})
         self.ed_out.setText(st.get("out_dir") or str(Path.home() / "Videos" / "Bilibili"))
         self.cb_quality.setCurrentText(st.get("quality", "Cao nhất có thể"))
         self.chk_tr.setChecked(st.get("translate_titles", True))
+        self.chk_cover.setChecked(st.get("cover", False))
+        if self.cb_quality.currentIndex() < 0:
+            self.cb_quality.setCurrentIndex(0)
 
     # ------------------------------------------------------------ giao diện
     def _build(self):
@@ -272,7 +308,11 @@ class SearchPage(QWidget):
         r2.addStretch(1)
         self.chk_tr = QCheckBox("Dịch tiêu đề sang tiếng Việt (dùng nhà cung cấp AI ở tab Dịch phụ đề)")
         r2.addWidget(self.chk_tr)
-        tv.addLayout(r1); tv.addLayout(r2)
+        self.ed_link = QLineEdit()
+        self.ed_link.setPlaceholderText("Hoặc dán link để tải luôn: bilibili.com/video/BV…, b23.tv/…, BV1xx…, av123…")
+        self.btn_link = _btn("⬇  Tải link này", "ghost")
+        r0 = QHBoxLayout(); r0.setSpacing(8); r0.addWidget(self.ed_link, 1); r0.addWidget(self.btn_link)
+        tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r0)
 
         # ---- kết quả
         res, rv = _card("Kết quả", None)
@@ -304,6 +344,8 @@ class SearchPage(QWidget):
         sv.addLayout(_field("Lưu vào thư mục", orow))
         sv.addLayout(_field("Chất lượng", self.cb_quality,
                             "Không đăng nhập Bilibili thường chỉ tải được khoảng 360p–480p"))
+        self.chk_cover = QCheckBox("Tải kèm ảnh bìa (.jpg)")
+        sv.addWidget(self.chk_cover)
         self.q_host = QWidget(); self.q_lay = QVBoxLayout(self.q_host)
         self.q_lay.setContentsMargins(0, 0, 0, 0); self.q_lay.setSpacing(8); self.q_lay.addStretch(1)
         self.q_empty = QLabel("Chưa có phim nào. Bấm “⬇ Tải” ở một kết quả."); self.q_empty.setObjectName("hint")
@@ -328,6 +370,8 @@ class SearchPage(QWidget):
         self.btn_go.clicked.connect(lambda: self._search(1))
         self.ed_q.returnPressed.connect(lambda: self._search(1))
         self.btn_vi.clicked.connect(self._vi_to_zh)
+        self.btn_link.clicked.connect(self._from_link)
+        self.ed_link.returnPressed.connect(self._from_link)
         self.btn_prev.clicked.connect(lambda: self._search(self.page - 1))
         self.btn_next.clicked.connect(lambda: self._search(self.page + 1))
         self.btn_out.clicked.connect(self._pick_out)
@@ -489,6 +533,43 @@ class SearchPage(QWidget):
         self._search(1)
 
     # ------------------------------------------------------------ tải
+    def _from_link(self):
+        text = self.ed_link.text().strip()
+        if not text:
+            return
+        self.btn_link.setEnabled(False)
+        self.lb_count.setText("đang đọc link…")
+
+        def work():
+            bvid, p = self.bili.resolve(text)
+            meta = self.bili.video_meta(bvid)
+            return bvid, p, meta
+        self._link_job = _Job(work)
+        self._link_job.result.connect(self._on_link)
+        self._link_job.start()
+
+    def _on_link(self, res, err):
+        self.btn_link.setEnabled(True)
+        if err:
+            self.lb_count.setText(f"✖ {err}")
+            return
+        bvid, p, meta = res
+        pic = meta.get("pic") or ""
+        v = Video(bvid=bvid, title=meta.get("title") or bvid, author=(meta.get("owner") or {}).get("name", ""),
+                  cover=pic, duration="", play=int((meta.get("stat") or {}).get("view") or 0),
+                  pubdate=int(meta.get("pubdate") or 0))
+        self.ed_link.clear()
+        if p:   # link đã chỉ đúng một phần (?p=N) -> tải phần đó
+            pages = meta.get("pages") or []
+            part = next((x for x in pages if x.get("page") == p), None)
+            name = f"{v.title} - P{p} {part.get('part', '')}".strip() if part and len(pages) > 1 else v.title
+            out = self.ed_out.text().strip() or str(Path.home() / "Videos" / "Bilibili")
+            self._enqueue(DownloadJob(f"{self.bili.web}/video/{bvid}?p={p}", name, out,
+                                      self.cb_quality.currentText(), cover=self.chk_cover.isChecked()))
+            self.lb_count.setText(f"Đã thêm vào hàng chờ: {name}")
+            return
+        self._ask_download(v)
+
     def _ask_download(self, v: Video):
         self.lb_count.setText("đang lấy danh sách tập…")
         self._parts_job = _Job(lambda: self.bili.parts(v.bvid))
@@ -514,7 +595,7 @@ class SearchPage(QWidget):
             out = os.path.join(out, safe or v.bvid)
         for p in parts:
             name = p.title if len(parts) > 1 else (v.title_vi or v.title)
-            self._enqueue(DownloadJob(p.url, name, out, self.cb_quality.currentText()))
+            self._enqueue(DownloadJob(p.url, name, out, self.cb_quality.currentText(), cover=self.chk_cover.isChecked()))
         self._store()
 
     def _enqueue(self, job: DownloadJob):
@@ -579,7 +660,7 @@ class SearchPage(QWidget):
     # ------------------------------------------------------------ lưu / tắt
     def _store(self):
         self.cfg["search"] = {"out_dir": self.ed_out.text().strip(), "quality": self.cb_quality.currentText(),
-                              "translate_titles": self.chk_tr.isChecked()}
+                              "translate_titles": self.chk_tr.isChecked(), "cover": self.chk_cover.isChecked()}
 
     def store_state(self):
         self._store()

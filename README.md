@@ -22,12 +22,15 @@ Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoả
 1. Gõ từ khóa tiếng Trung, ví dụ `仙侠短剧`, hoặc bấm một gợi ý có sẵn. Nếu chỉ biết tiếng Việt thì gõ tiếng Việt (ví dụ "phim tu tiên ngắn") rồi bấm **VI→中**: AI sẽ đổi sang từ khóa tiếng Trung và tìm luôn.
 2. Lọc theo **sắp xếp** (liên quan nhất, xem nhiều, mới đăng…) và **thời lượng**. Bấm Trang trước / Trang sau để xem thêm (tối đa 50 trang, mỗi trang 20 video).
 3. Tick **Dịch tiêu đề sang tiếng Việt** để AI dịch tiêu đề. Ô này dùng nhà cung cấp AI đã cài ở tab Dịch phụ đề.
-4. Bấm **⬇ Tải** ở video muốn tải. Video nhiều tập (P1, P2… hoặc tuyển tập) sẽ hiện hộp thoại để chọn tập. Các tập của một bộ phim được lưu chung vào một thư mục riêng.
-5. Hàng chờ bên phải tải lần lượt từng phim, có tốc độ và thời gian còn lại. File lưu thành `.mp4`, tên file là tên đang hiển thị trong app.
+4. **Dán link để tải luôn:** dán vào ô "Hoặc dán link…" link video, link chia sẻ `b23.tv` trong app Bilibili, mã `BV…` hoặc `av…`, rồi bấm **Tải link này**. Link có `?p=3` sẽ tải đúng phần 3.
+5. Bấm **⬇ Tải** ở video muốn tải. Video nhiều tập (P1, P2… hoặc tuyển tập) sẽ hiện hộp thoại để chọn tập. Các tập của một bộ phim được lưu chung vào một thư mục riêng.
+6. Hàng chờ bên phải tải lần lượt từng phim, có tốc độ và thời gian còn lại. File lưu thành `.mp4`, tên file là tên đang hiển thị trong app. Có thể tick **Tải kèm ảnh bìa**, hoặc chọn chất lượng **Chỉ âm thanh (.m4a)**.
+7. Phim nào lỗi sẽ có nút **📋 Sao chép lỗi**; bấm chuột phải vào dòng đó còn có thêm "Sao chép link video".
 
 Lưu ý:
 - Khi không đăng nhập, Bilibili thường chỉ cho tải chất lượng khoảng **360p–480p**.
-- Việc tải dùng `yt-dlp`. `run.bat` tự cập nhật `yt-dlp` mỗi lần chạy, vì Bilibili hay đổi cách trả video.
+- Cách tải: app lấy thẳng luồng hình (ưu tiên H.264 để CapCut mở được) và luồng tiếng qua API phát video của Bilibili, dùng cookie khách của app, rồi ghép lại bằng ffmpeg mà không nén lại. Nếu cách này lỗi, app tự thử `yt-dlp`. `run.bat` tự cập nhật `yt-dlp` mỗi lần chạy.
+- Tải dở mà bấm Dừng thì file `.part` được giữ lại; lần sau tải tiếp từ chỗ dừng.
 - Chỉ dùng phim tải về đúng với quyền của người đăng. Khi đăng lại phim, bạn tự chịu trách nhiệm về bản quyền.
 
 ## Dịch phụ đề
