@@ -538,6 +538,7 @@ class DubPage(QWidget):
         self.tb_lines.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.tabs.addTab(self.tb_chars, "Nhân vật && giọng")
         self.tabs.addTab(self.tb_lines, "Câu thoại")
+        self.tabs.addTab(self._build_library(), "Thư viện giọng")
         vr.addWidget(self.tabs, 1)
         hint = QLabel("Đổi giọng ở bảng Nhân vật; sửa chữ ở bảng Câu thoại (bấm đúp). Chọn vài câu rồi bấm "
                       "“Tạo lại câu đã chọn” để chỉ đọc lại những câu đó.")
@@ -646,8 +647,77 @@ class DubPage(QWidget):
             self.set_video(f)
 
     # ================================================================ bảng
+    # ================================================================ thư viện giọng
+    def _build_library(self) -> QWidget:
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 8, 0, 0); v.setSpacing(8)
+        top = QHBoxLayout(); top.setSpacing(8)
+        self.cb_lib_filter = QComboBox(); self.cb_lib_filter.addItems(["Tất cả giọng", "Giọng nam", "Giọng nữ"])
+        self.ed_lib_text = QLineEdit("Sư tôn, đệ tử đến muộn. Xin người trách phạt.")
+        self.ed_lib_text.setPlaceholderText("Câu đọc thử")
+        self.btn_lib_load = _btn("Nạp danh sách giọng", "ghost")
+        top.addWidget(self.cb_lib_filter); top.addWidget(self.ed_lib_text, 1); top.addWidget(self.btn_lib_load)
+        v.addLayout(top)
+        self.tb_lib = QTableWidget(0, 4); self.tb_lib.setObjectName("jobs")
+        self.tb_lib.setHorizontalHeaderLabels(["Giọng VieNeu", "Giới tính", "", "Gán cho nhân vật"])
+        self._table_style(self.tb_lib, [QHeaderView.Stretch, QHeaderView.Fixed, QHeaderView.Fixed, QHeaderView.Fixed])
+        self.tb_lib.setColumnWidth(1, 80); self.tb_lib.setColumnWidth(2, 90); self.tb_lib.setColumnWidth(3, 190)
+        self.tb_lib.verticalHeader().setDefaultSectionSize(44)
+        v.addWidget(self.tb_lib, 1)
+        self.lb_lib = QLabel("Danh sách giọng có sẵn của VieNeu-TTS (tải từ Hugging Face lần đầu). "
+                             "Bấm ▶ để nghe từng giọng với câu ở trên, rồi gán cho nhân vật.")
+        self.lb_lib.setObjectName("hint"); self.lb_lib.setWordWrap(True); v.addWidget(self.lb_lib)
+        self.btn_lib_load.clicked.connect(lambda: self._ensure_voices())
+        self.cb_lib_filter.currentIndexChanged.connect(lambda _: self._fill_library())
+        self.tabs.currentChanged.connect(lambda i: self._ensure_voices() if i == 2 and not self.voice_list else None)
+        return w
+
+    def _fill_library(self):
+        from .dub import voice_gender
+        if not hasattr(self, "tb_lib"):
+            return
+        want = {0: None, 1: "nam", 2: "nữ"}[self.cb_lib_filter.currentIndex()]
+        self.tb_lib.setRowCount(0)
+        for label, vid in self.voice_list:
+            g = voice_gender(label)
+            if want and g != want:
+                continue
+            r = self.tb_lib.rowCount(); self.tb_lib.insertRow(r)
+            self.tb_lib.setItem(r, 0, QTableWidgetItem(label))
+            self.tb_lib.setItem(r, 1, QTableWidgetItem(g or "?"))
+            pb = _btn("▶ Nghe", "link"); pb.clicked.connect(lambda _=False, vid=vid: self._preview_lib(vid))
+            self.tb_lib.setCellWidget(r, 2, pb)
+            cb = QComboBox(); cb.setStyleSheet(self._cell_css)
+            cb.addItem("— chọn nhân vật —", "")
+            for c in self.project.characters:
+                cb.addItem(c.name + (" ✓" if c.voice == vid else ""), c.name)
+            cb.activated.connect(lambda i, cb=cb, vid=vid: self._assign_from_lib(cb.itemData(i), vid))
+            self.tb_lib.setCellWidget(r, 3, cb)
+        self.tabs.setTabText(2, f"Thư viện giọng ({len(self.voice_list)})")
+
+    def _preview_lib(self, vid: str):
+        text = self.ed_lib_text.text().strip() or "Xin chào, đây là giọng đọc thử."
+        self.lb_lib.setText("Đang đọc thử…")
+        self._pjob = _Job(lambda: self._synth_tmp(text, vid))
+        self._pjob.result.connect(lambda p, err: (self._play(p), self.lb_lib.setText("▶ Đang phát")) if p
+                                  else self.lb_lib.setText(f"✖ {err}"))
+        self._pjob.start()
+
+    def _assign_from_lib(self, name, vid):
+        c = self.project.char(name) if name else None
+        if not c:
+            return
+        c.voice = vid
+        self.project.save()
+        self._fill_tables()
+        self.lb_lib.setText(f"✔ Đã gán giọng cho {name}")
+
     def _voice_combo(self, current: str) -> QComboBox:
         cb = QComboBox()
+        if not self.voice_list:
+            cb.addItem("Bấm để nạp giọng…", current or "")
+            cb.setToolTip("Danh sách giọng VieNeu chưa nạp. Mở cái này hoặc tab Thư viện giọng để nạp.")
+            cb.activated.connect(lambda _: self._ensure_voices())
+            return cb
         for label, vid in self.voice_list:
             cb.addItem(label, vid)
         if current and cb.findData(current) < 0:
@@ -699,6 +769,7 @@ class DubPage(QWidget):
             pb = _btn("▶", "link", "Nghe câu này"); pb.clicked.connect(lambda _=False, l=l: self._play_line(l))
             self.tb_lines.setCellWidget(r, 5, pb)
         self.tb_lines.blockSignals(False)
+        self._fill_library()
         if proj.lines:
             self.tabs.setTabText(1, f"Câu thoại ({len(proj.lines)})")
             self.tabs.setTabText(0, f"Nhân vật && giọng ({len(proj.characters)})")
@@ -758,7 +829,11 @@ class DubPage(QWidget):
             if then:
                 then()
             return
+        if getattr(self, "_vjob", None) and self._vjob.isRunning():
+            return
         self.lb_engine.setText("VieNeu-TTS: đang nạp model… (lần đầu tải từ Hugging Face)")
+        if hasattr(self, "lb_lib"):
+            self.lb_lib.setText("Đang nạp VieNeu-TTS và danh sách giọng… lần đầu sẽ tải model từ Hugging Face.")
         self._vjob = _Job(self.engine.voices)
         self._vjob.result.connect(lambda res, err: self._on_voices(res, err, then))
         self._vjob.start()
@@ -769,6 +844,8 @@ class DubPage(QWidget):
             return
         self.voice_list = list(res)
         self.lb_engine.setText(f"VieNeu-TTS v3 · {self.engine.device} · {len(self.voice_list)} giọng có sẵn")
+        if self.project.characters and not any(c.voice for c in self.project.characters):
+            auto_assign_voices(self.project.characters, self.voice_list); self.project.save()
         self._fill_tables()
         if then:
             then()
