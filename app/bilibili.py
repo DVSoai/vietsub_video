@@ -4,7 +4,7 @@
   Nếu bị chặn (-412/-352) thì thử lại bản có chữ ký WBI.
 - Danh sách tập: /x/web-interface/view (video nhiều phần “P1, P2…” và tuyển tập ugc_season).
 - Tải: yt-dlp + ffmpeg đi kèm app (ghép hình + tiếng thành .mp4).
-  Khách chưa đăng nhập thường chỉ được chất lượng thấp (khoảng 360p–480p).
+  Gửi kèm try_look=1 nên khách chưa đăng nhập vẫn lấy được tới 1080p (1080P+, 4K, 60fps cần VIP).
 """
 from __future__ import annotations
 
@@ -227,7 +227,8 @@ class Bili:
 
     def streams(self, bvid: str, cid: int, max_h: int = 4320) -> dict:
         """Chọn luồng hình (ưu tiên H.264) + luồng tiếng tốt nhất mà khách được xem."""
-        params = {"bvid": bvid, "cid": cid, "qn": 80, "fnval": 4048, "fnver": 0, "fourk": 1}
+        # try_look=1: khách chưa đăng nhập vẫn được luồng 720p/1080p (chế độ “xem thử” của trình phát)
+        params = {"bvid": bvid, "cid": cid, "qn": 127, "fnval": 4048, "fnver": 0, "fourk": 1, "try_look": 1}
         data = self._get("/x/player/playurl", params)
         if data.get("code") in (-412, -352, -403):
             data = self._get("/x/player/wbi/playurl", self._sign(params))

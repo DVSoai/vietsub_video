@@ -28,7 +28,7 @@ Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoả
 7. Phim nào lỗi sẽ có nút **📋 Sao chép lỗi**; bấm chuột phải vào dòng đó còn có thêm "Sao chép link video".
 
 Lưu ý:
-- Khi không đăng nhập, Bilibili thường chỉ cho tải chất lượng khoảng **360p–480p**.
+- Không cần đăng nhập vẫn tải được tới **1080p**: app gửi kèm tham số `try_look=1`, chế độ "xem thử" của trình phát Bilibili. Các mức 1080P+, 4K và 60fps chỉ dành cho tài khoản VIP (大会员).
 - Cách tải: app lấy thẳng luồng hình (ưu tiên H.264 để CapCut mở được) và luồng tiếng qua API phát video của Bilibili, dùng cookie khách của app, rồi ghép lại bằng ffmpeg mà không nén lại. Nếu cách này lỗi, app tự thử `yt-dlp`. `run.bat` tự cập nhật `yt-dlp` mỗi lần chạy.
 - Tải dở mà bấm Dừng thì file `.part` được giữ lại; lần sau tải tiếp từ chỗ dừng.
 - Chỉ dùng phim tải về đúng với quyền của người đăng. Khi đăng lại phim, bạn tự chịu trách nhiệm về bản quyền.

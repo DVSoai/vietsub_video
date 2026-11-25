@@ -343,7 +343,7 @@ class SearchPage(QWidget):
         self.cb_quality = QComboBox(); self.cb_quality.addItems(QUALITIES)
         sv.addLayout(_field("Lưu vào thư mục", orow))
         sv.addLayout(_field("Chất lượng", self.cb_quality,
-                            "Không đăng nhập Bilibili thường chỉ tải được khoảng 360p–480p"))
+                            "Không cần đăng nhập vẫn tải được tới 1080p (1080P+, 4K, 60fps chỉ dành cho VIP)"))
         self.chk_cover = QCheckBox("Tải kèm ảnh bìa (.jpg)")
         sv.addWidget(self.chk_cover)
         self.q_host = QWidget(); self.q_lay = QVBoxLayout(self.q_host)
