@@ -93,7 +93,20 @@ Tab **3 · Lồng tiếng** biến video tiếng Trung thành video nói tiếng
 
 Cài đặt: máy có card NVIDIA chạy `cai_long_tieng_gpu.bat` (PyTorch CUDA 12.8, hợp RTX 50-series); máy không có card chạy `cai_long_tieng_cpu.bat` (chậm hơn nhiều). Lần đầu đọc giọng, VieNeu tự tải model từ Hugging Face. Mọi file trung gian nằm trong thư mục `ten_video_long_tieng/` cạnh video; câu đã đọc được lưu lại nên sửa một câu chỉ đọc lại câu đó.
 
+Kiểu CapCut ngay trong tab Lồng tiếng:
+
+- **Tốc độ video** (0.5x–2x): đổi cả hình và nhạc nền, phụ đề tự khớp, giọng Việt vẫn tự nhiên.
+- Mỗi nhân vật có **Tốc độ đọc**, **Cao độ** (−8…+8 nửa cung, không đổi tốc độ) và **Âm lượng** riêng, nghe thử ngay.
+- **Hình ảnh khi xuất**: xoá chữ Trung in sẵn (nội suy nền), làm mờ hoặc che hộp; in phụ đề Việt; đổi khung 9:16 / 16:9 / 1:1 / 4:5 với nền mờ; gắn logo kênh của bạn. Kiểu chữ, màu sắc, phóng to, lật, làm nét, mờ dần, nhạc nền thêm lấy theo tab Xuất video.
+
 VieNeu-TTS dùng giấy phép Apache 2.0 nên dùng được cho kênh có kiếm tiền. App chỉ dùng giọng có sẵn của VieNeu, không nhái giọng diễn viên gốc.
+
+## Nghe giọng & dịch bằng Hugging Face (miễn phí, chạy trên máy)
+
+- Ở tab Dịch phụ đề, ô chọn cạnh “Chỉ tạo phụ đề gốc” cho chọn **HF Whisper large-v3-turbo** hoặc **HF Belle Whisper turbo (chuyên tiếng Trung)**: nghe giọng ngay trên card, không cần key, không giới hạn.
+- Nhà cung cấp **Hugging Face trên máy (miễn phí)**: dịch bằng Qwen2.5 (7B tự nén 4-bit cho card 8 GB). Không cần key.
+- Nhà cung cấp **Hugging Face (Inference API)**: dùng token `hf_…`, gọi DeepSeek/Qwen/Llama trên máy chủ HF. Tài khoản free chỉ có ít lượt mỗi tháng.
+- Cài: chạy `cai_long_tieng_gpu.bat` (đã gồm PyTorch CUDA, transformers, accelerate, bitsandbytes).
 
 ## Xuất video Vietsub (in phụ đề vào video)
 
@@ -106,6 +119,8 @@ Bấm **2 · Xuất video Vietsub** ở đầu cửa sổ. Đây là chức năn
 5. **Xuất video:** chọn nén bằng CPU (x264, máy nào cũng chạy) hoặc card NVIDIA (NVENC, nhanh hơn), chọn chất lượng, rồi bấm **Xuất video**. Kết quả mặc định là `ten-video.vietsub.mp4`, âm thanh được giữ nguyên.
 
 Font: app liệt kê font trong Windows và trong thư mục `fonts` cạnh app. Thả thêm font kiểu CapCut vào `fonts`; nhớ chọn font có đủ dấu tiếng Việt. Khi xuất, app chép font đi kèm nên không phụ thuộc máy.
+
+Thẻ **Khung hình, màu & âm thanh** (kiểu CapCut): tốc độ video, khung 9:16/16:9/1:1/4:5 nền mờ hoặc đen, phóng to, lật ngang, độ sáng, tương phản, bão hoà, làm nét, logo kênh, mờ dần đầu/cuối, nhạc nền thêm, âm lượng, giảm ồn. Che chữ có thêm chế độ **Xoá chữ (nội suy nền)**.
 
 ## Ghi chú
 

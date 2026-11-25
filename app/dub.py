@@ -39,6 +39,9 @@ class Character:
     gender: str = ""        # "nam" | "nữ" | ""
     desc: str = ""          # vd: "sư tôn, giọng trầm"
     voice: str = ""         # id giọng VieNeu
+    speed: float = 1.0      # tốc độ đọc riêng của nhân vật (như thanh Tốc độ của CapCut)
+    pitch: float = 0.0      # cao độ, nửa cung (-8 trầm … +8 cao), không đổi tốc độ
+    volume: float = 1.0     # âm lượng riêng
 
 
 @dataclass
@@ -66,7 +69,7 @@ class Project:
 
     def save(self):
         os.makedirs(self.workdir, exist_ok=True)
-        data = {"video": self.video, "characters": [asdict(c) for c in self.characters],
+        data = {"video": self.video, "video_speed": getattr(self, "video_speed", 1.0), "characters": [asdict(c) for c in self.characters],
                 "lines": [asdict(l) for l in self.lines]}
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -78,8 +81,10 @@ class Project:
         p = cls(video, workdir)
         if os.path.exists(p.path):
             d = json.load(open(p.path, encoding="utf-8"))
-            p.characters = [Character(**c) for c in d.get("characters", [])]
-            p.lines = [Line(**l) for l in d.get("lines", [])]
+            cf = set(Character.__dataclass_fields__); lf = set(Line.__dataclass_fields__)
+            p.characters = [Character(**{k: v for k, v in c.items() if k in cf}) for c in d.get("characters", [])]
+            p.lines = [Line(**{k: v for k, v in l.items() if k in lf}) for l in d.get("lines", [])]
+            p.video_speed = float(d.get("video_speed", 1.0))
         return p
 
     def char(self, name: str) -> Character | None:
@@ -183,7 +188,7 @@ class TTSEngine:
         try:
             from vieneu import Vieneu
         except ImportError as e:
-            raise RuntimeError("Chưa cài VieNeu-TTS: chạy  pip install vieneu  (card NVIDIA: chạy cai_gpu.bat)") from e
+            raise RuntimeError("Chưa cài VieNeu-TTS: chạy  pip install vieneu  (card NVIDIA: chạy cai_long_tieng_gpu.bat)") from e
         self.log("  Đang nạp VieNeu-TTS (lần đầu sẽ tải model từ Hugging Face, vài trăm MB)…")
         self.tts = Vieneu()
         self.sr = int(getattr(self.tts, "sample_rate", SR))
@@ -252,15 +257,27 @@ def _flags():
     return 0x08000000 if sys.platform == "win32" else 0
 
 
-def tempo(wav: np.ndarray, factor: float, sr: int = SR) -> np.ndarray:
-    """Đọc nhanh hơn `factor` lần mà không đổi cao độ (ffmpeg atempo)."""
-    if abs(factor - 1) < 0.02:
-        return wav
+def _atempo(f: float) -> list[str]:
     chain = []
-    f = factor
     while f > 2.0:
         chain.append("atempo=2.0"); f /= 2.0
+    while f < 0.5:
+        chain.append("atempo=0.5"); f /= 0.5
     chain.append(f"atempo={f:.4f}")
+    return chain
+
+
+def tempo(wav: np.ndarray, factor: float, sr: int = SR, pitch: float = 0.0) -> np.ndarray:
+    """Đọc nhanh hơn `factor` lần, giữ cao độ (atempo); pitch: lên/xuống nửa cung mà không đổi tốc độ."""
+    if abs(factor - 1) < 0.02 and abs(pitch) < 0.05:
+        return wav
+    chain = []
+    if abs(pitch) >= 0.05:
+        r = 2 ** (pitch / 12)
+        chain += [f"asetrate={sr * r:.1f}", f"aresample={sr}"]
+        factor = factor / r
+    if abs(factor - 1) >= 0.005:
+        chain += _atempo(factor)
     r = subprocess.run([_ffmpeg(), "-v", "error", "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "-",
                         "-af", ",".join(chain), "-f", "f32le", "-"], input=wav.astype(np.float32).tobytes(),
                        capture_output=True, creationflags=_flags())
@@ -290,6 +307,7 @@ class MixOptions:
     voice_gain: float = 1.0
     bg_gain: float = 1.0
     max_speed: float = 1.35
+    video_speed: float = 1.0         # tốc độ cả video (hình + nhạc nền), như Tốc độ của CapCut
 
 
 def fit_lines(lines: list[Line], wavs: dict[int, np.ndarray], max_speed: float, sr: int = SR,
@@ -316,7 +334,8 @@ def fit_lines(lines: list[Line], wavs: dict[int, np.ndarray], max_speed: float, 
     return out
 
 
-def mix(lines: list[Line], voice: dict[int, np.ndarray], bg: np.ndarray, opt: MixOptions, sr: int = SR) -> np.ndarray:
+def mix(lines: list[Line], voice: dict[int, np.ndarray], bg: np.ndarray, opt: MixOptions, sr: int = SR,
+        gains: dict[int, float] | None = None) -> np.ndarray:
     """bg [2, n] -> [2, n] đã trộn giọng Việt."""
     n = bg.shape[1]
     track = np.zeros(n, np.float32)
@@ -329,7 +348,7 @@ def mix(lines: list[Line], voice: dict[int, np.ndarray], bg: np.ndarray, opt: Mi
         if a >= n:
             continue
         b = min(n, a + len(w))
-        track[a:b] += normalize(w[:b - a]) * opt.voice_gain
+        track[a:b] += normalize(w[:b - a]) * opt.voice_gain * (gains or {}).get(l.index, 1.0)
         active[a:b] = 1.0
     out = bg * opt.bg_gain
     if not opt.remove_original:
@@ -355,11 +374,36 @@ def encode_m4a(wav_path: str, out: str):
         raise RuntimeError("ffmpeg không nén được âm thanh: " + r.stderr.decode("utf-8", "replace")[-300:])
 
 
-def mux_video(video: str, audio: str, out: str):
-    """Thay tiếng của video bằng file lồng tiếng (không nén lại hình)."""
-    r = subprocess.run([_ffmpeg(), "-v", "error", "-y", "-i", video, "-i", audio, "-map", "0:v:0", "-map", "1:a:0",
-                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out],
-                       capture_output=True, creationflags=_flags())
+def speed_bg(bg: np.ndarray, speed: float, sr: int = SR) -> np.ndarray:
+    """Tăng/giảm tốc nhạc nền [ch, n] theo tốc độ video, giữ cao độ."""
+    if abs(speed - 1) < 0.005:
+        return bg
+    chans = [tempo(bg[c], speed, sr) for c in range(bg.shape[0])]
+    n = min(len(c) for c in chans)
+    return np.stack([c[:n] for c in chans]).astype(np.float32)
+
+
+def scale_lines(lines: list[Line], speed: float) -> list[Line]:
+    if abs(speed - 1) < 0.005:
+        return lines
+    from dataclasses import replace
+    return [replace(l, start=l.start / speed, end=l.end / speed) for l in lines]
+
+
+def mux_video(video: str, audio: str, out: str, speed: float = 1.0):
+    """Thay tiếng của video bằng file lồng tiếng. speed != 1: đổi tốc độ hình (phải nén lại hình)."""
+    base = [_ffmpeg(), "-v", "error", "-y", "-i", video, "-i", audio, "-map", "0:v:0", "-map", "1:a:0"]
+    tail = ["-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out]
+    if abs(speed - 1) < 0.005:
+        tries = [["-c:v", "copy"]]
+    else:
+        vf = ["-filter:v", f"setpts=PTS/{speed:.4f}"]
+        tries = [vf + ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21", "-pix_fmt", "yuv420p"],
+                 vf + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]]
+    for t in tries:
+        r = subprocess.run(base + t + tail, capture_output=True, creationflags=_flags())
+        if r.returncode == 0:
+            return
     if r.returncode != 0:
         raise RuntimeError("ffmpeg ghép video lỗi: " + r.stderr.decode("utf-8", "replace")[-300:])
 
@@ -383,11 +427,13 @@ def synth_lines(engine: TTSEngine, proj: Project, cache_dir: str, log=print,
         text = emotion_text(l.text, l.emotion)
         path = os.path.join(cache_dir, line_key(text, voice) + ".wav")
         if os.path.exists(path):
-            out[l.index] = load_audio(path, sr=engine.sr if engine.tts else SR, channels=1)[0]
+            w = load_audio(path, sr=engine.sr if engine.tts else SR, channels=1)[0]
         else:
             w = engine.synth(text, voice)
             save_wav(path, w, engine.sr)
-            out[l.index] = w
+        if ch and (abs(ch.speed - 1) > 0.01 or abs(ch.pitch) > 0.05):
+            w = tempo(w, ch.speed, engine.sr, ch.pitch)
+        out[l.index] = w
         progress(k, len(todo))
     return out
 

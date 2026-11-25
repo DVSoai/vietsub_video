@@ -54,7 +54,7 @@ PRESETS: dict[str, dict] = {
 @dataclass
 class Cover:
     """Che chữ cứng có sẵn trong video (vd: phụ đề tiếng Trung in sẵn)."""
-    mode: str = "none"           # none | blur | box
+    mode: str = "none"           # none | blur | box | erase (xoá chữ bằng nội suy nền, như CapCut)
     y_pct: float = 80.0          # mép trên vùng che (% chiều cao)
     h_pct: float = 12.0          # chiều cao vùng che (%)
     x_pct: float = 5.0           # lề trái/phải vùng che (%) — che giữa, chừa 2 bên
@@ -70,6 +70,152 @@ class ExportOpts:
     preset: str = "veryfast"
     audio_copy: bool = True
     audio_file: str = ""         # file tiếng thay thế (vd: tiếng lồng .vi.dub.m4a); rỗng = tiếng gốc
+
+
+@dataclass
+class Look:
+    """Chỉnh hình & tiếng kiểu CapCut khi xuất."""
+    speed: float = 1.0           # tốc độ video (phụ đề, tiếng tự khớp theo)
+    aspect: str = ""             # "" giữ nguyên | "9:16" | "16:9" | "1:1" | "4:5"
+    bg: str = "blur"             # nền khi đổi khung: blur (mờ từ chính video) | black
+    zoom: int = 100              # phóng to % (cắt giữa)
+    flip: bool = False           # lật ngang
+    bright: int = 0              # độ sáng -50..50
+    contrast: int = 100          # tương phản %
+    sat: int = 100               # bão hoà màu %
+    sharpen: int = 0             # làm nét 0..100
+    logo: str = ""               # ảnh logo .png
+    logo_pos: str = "tr"         # tl tr bl br
+    logo_size: int = 12          # % chiều ngang khung
+    logo_opacity: int = 90
+    fade: float = 0.0            # mờ dần đầu/cuối (giây)
+    music: str = ""              # nhạc nền thêm (lặp lại cho đủ dài)
+    music_vol: int = 20          # %
+    voice_vol: int = 100         # % âm lượng tiếng chính
+    denoise: bool = False        # giảm ồn tiếng chính
+    audio_sped: bool = False     # tiếng đã khớp tốc độ sẵn (tiếng lồng) -> không đổi tốc độ tiếng nữa
+
+    def any_audio(self) -> bool:
+        return ((abs(self.speed - 1) > 0.005 and not self.audio_sped) or bool(self.music) or self.fade > 0 or self.voice_vol != 100
+                or self.denoise)
+
+
+ASPECTS = {"9:16": (9, 16), "16:9": (16, 9), "1:1": (1, 1), "4:5": (4, 5)}
+
+
+def frame_size(info: dict, aspect: str) -> tuple[int, int]:
+    w, h = info["w"], info["h"]
+    if aspect not in ASPECTS:
+        return w, h
+    a, b = ASPECTS[aspect]
+    long_side = 1920 if max(w, h) >= 1600 else 1280
+    if a >= b:
+        W, H = long_side, long_side * b // a
+    else:
+        H, W = long_side, long_side * a // b
+    return W // 2 * 2, H // 2 * 2
+
+
+def _atempo_chain(f: float) -> list[str]:
+    out = []
+    while f > 2.0:
+        out.append("atempo=2.0"); f /= 2
+    while f < 0.5:
+        out.append("atempo=0.5"); f /= 0.5
+    out.append(f"atempo={f:.4f}")
+    return out
+
+
+def look_pre(cur: str, info: dict, look: Look | None, parts: list) -> str:
+    """Trước khi che chữ/in phụ đề: tốc độ, lật, phóng to, màu."""
+    if not look:
+        return cur
+    f = []
+    if abs(look.speed - 1) > 0.005:
+        f.append(f"setpts=PTS/{look.speed:.4f}")
+    if look.flip:
+        f.append("hflip")
+    if look.zoom > 100:
+        z = look.zoom / 100
+        f.append(f"crop=trunc(iw/{z:.4f}/2)*2:trunc(ih/{z:.4f}/2)*2,scale={info['w']}:{info['h']}")
+    if look.bright or look.contrast != 100 or look.sat != 100:
+        f.append(f"eq=brightness={look.bright / 100:.3f}:contrast={look.contrast / 100:.3f}:"
+                 f"saturation={look.sat / 100:.3f}")
+    if look.sharpen:
+        f.append(f"unsharp=5:5:{look.sharpen / 50:.2f}:5:5:0")
+    if not f:
+        return cur
+    parts.append(f"{cur}{','.join(f)}[pre]")
+    return "[pre]"
+
+
+def look_post(cur: str, info: dict, look: Look | None, parts: list, logo_idx: int | None, duration: float) -> str:
+    """Sau khi in phụ đề: đổi khung hình, logo, mờ dần."""
+    if not look:
+        return cur
+    if look.aspect in ASPECTS:
+        W, H = frame_size(info, look.aspect)
+        if look.bg == "blur":
+            parts.append(f"{cur}split[fa][fb]")
+            parts.append(f"[fa]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                         f"boxblur=luma_radius=30:luma_power=2:chroma_radius=15:chroma_power=2[bgb]")
+            parts.append(f"[fb]scale={W}:{H}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2[fg]")
+            parts.append(f"[bgb][fg]overlay=(W-w)/2:(H-h)/2[fr]")
+        else:
+            parts.append(f"{cur}scale={W}:{H}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+                         f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black[fr]")
+        cur = "[fr]"
+        fw = W
+    else:
+        fw = info["w"]
+    if logo_idx is not None:
+        lw = max(16, int(fw * look.logo_size / 100)) // 2 * 2
+        m = max(8, int(fw * 0.025))
+        x = {"tl": f"{m}", "bl": f"{m}"}.get(look.logo_pos, f"W-w-{m}")
+        y = {"tl": f"{m}", "tr": f"{m}"}.get(look.logo_pos, f"H-h-{m}")
+        parts.append(f"[{logo_idx}:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={look.logo_opacity / 100:.2f}[lg]")
+        parts.append(f"{cur}[lg]overlay={x}:{y}[lgo]")
+        cur = "[lgo]"
+    if look.fade > 0 and duration > 0:
+        d = min(look.fade, duration / 3)
+        parts.append(f"{cur}fade=t=in:st=0:d={d:.2f},fade=t=out:st={max(0.0, duration - d):.2f}:d={d:.2f}[fd]")
+        cur = "[fd]"
+    return cur
+
+
+def audio_graph(src: str, look: Look, music_idx: int | None, duration: float) -> str:
+    """Chuỗi lọc tiếng -> nhãn [a]."""
+    f = []
+    if look.denoise:
+        f.append("afftdn=nf=-25")
+    if abs(look.speed - 1) > 0.005 and not look.audio_sped:
+        f += _atempo_chain(look.speed)
+    if look.voice_vol != 100:
+        f.append(f"volume={look.voice_vol / 100:.2f}")
+    if look.fade > 0 and duration > 0:
+        d = min(look.fade, duration / 3)
+        f.append(f"afade=t=in:st=0:d={d:.2f},afade=t=out:st={max(0.0, duration - d):.2f}:d={d:.2f}")
+    parts = [f"[{src}]{','.join(f) or 'anull'}[a0]"]
+    if music_idx is not None:
+        parts.append(f"[{music_idx}:a]volume={look.music_vol / 100:.2f},atrim=0:{duration:.2f}[m]")
+        parts.append("[a0][m]amix=inputs=2:duration=first:normalize=0[a]")
+    else:
+        parts[-1] = parts[-1][:-4] + "[a]"
+    return ";".join(parts)
+
+
+def scale_cues(cues, speed: float):
+    """Đổi thời gian phụ đề theo tốc độ video."""
+    if abs(speed - 1) < 0.005:
+        return cues
+    from .srt import Cue
+
+    def sc(t):
+        h, m, rest = t.split(":"); sec, ms = rest.split(",")
+        v = (int(h) * 3600 + int(m) * 60 + int(sec) + int(ms) / 1000) / speed
+        ms_ = int(round(v * 1000))
+        return f"{ms_ // 3600000:02d}:{ms_ // 60000 % 60:02d}:{ms_ // 1000 % 60:02d},{ms_ % 1000:03d}"
+    return [Cue(c.index, sc(c.start), sc(c.end), c.text, getattr(c, "extra", "")) for c in cues]
 
 
 # ------------------------------------------------------------------ tiện ích ffmpeg
@@ -231,9 +377,24 @@ def _even(v: float) -> int:
     return max(2, int(round(v / 2)) * 2)
 
 
-def filter_graph(info: dict, cover: Cover, with_subs: bool) -> str:
+def filter_graph(info: dict, cover: Cover, with_subs: bool, look: Look | None = None,
+                 logo_idx: int | None = None, duration: float = 0.0) -> str:
     w, h = info["w"], info["h"]
     parts, cur = [], "[0:v]"
+    cur = look_pre(cur, info, look, parts)
+    if cover.mode == "erase" and cover.h_pct > 0:
+        # delogo: lấp vùng chữ bằng màu nội suy từ viền xung quanh; vùng không được chạm mép khung
+        y = max(1, _even(h * cover.y_pct / 100))
+        ch = max(2, min(_even(h * cover.h_pct / 100), h - y - 2))
+        x = max(1, _even(w * cover.x_pct / 100))
+        cw = max(2, min(w - 2 * x, w - x - 2))
+        parts.append(f"{cur}delogo=x={x}:y={y}:w={cw}:h={ch}[dl0]")
+        # làm mịn nhẹ vết nội suy chỉ trong vùng đã xoá
+        r = max(1, min(6, ch // 4 - 1))
+        parts.append(f"[dl0]split[dlb][dls]")
+        parts.append(f"[dls]crop={cw}:{ch}:{x}:{y},boxblur=luma_radius={r}:chroma_radius={max(1, r // 2)}[dlc]")
+        parts.append(f"[dlb][dlc]overlay={x}:{y}[cv]")
+        cur = "[cv]"
     if cover.mode in ("blur", "box") and cover.h_pct > 0:
         y = _even(h * cover.y_pct / 100)
         ch = min(_even(h * cover.h_pct / 100), h - y) // 2 * 2
@@ -254,9 +415,10 @@ def filter_graph(info: dict, cover: Cover, with_subs: bool) -> str:
                              f"color=0x{col}@{cover.box_opacity / 100:.2f}:t=fill[cv]")
             cur = "[cv]"
     if with_subs:
-        parts.append(f"{cur}ass=sub.ass:fontsdir=fonts[v]")
-    else:
-        parts.append(f"{cur}null[v]")
+        parts.append(f"{cur}ass=sub.ass:fontsdir=fonts[sb]")
+        cur = "[sb]"
+    cur = look_post(cur, info, look, parts, logo_idx, duration)
+    parts.append(f"{cur}null[v]")
     return ";".join(parts)
 
 
@@ -272,16 +434,25 @@ def _prepare(tmp: str, cues, style: SubStyle, info: dict) -> None:
 
 # ------------------------------------------------------------------ xem trước
 def preview_frame(video: str, cues, style: SubStyle, cover: Cover, at: float, out_png: str,
-                  info: dict | None = None, max_w: int = 960) -> str:
-    """Xuất 1 khung hình tại giây `at` có phụ đề + vùng che -> PNG."""
+                  info: dict | None = None, max_w: int = 960, look: Look | None = None) -> str:
+    """Xuất 1 khung hình tại giây `at` có phụ đề + vùng che (+ khung/màu/logo) -> PNG."""
     info = info or probe(video)
     tmp = tempfile.mkdtemp(prefix="st_prev_")
     try:
         _prepare(tmp, cues, style, info)
-        graph = filter_graph(info, cover, with_subs=True)
+        lk = None
+        extra = []
+        if look:
+            from dataclasses import replace
+            lk = replace(look, speed=1.0, fade=0.0)   # xem trước 1 khung: bỏ tốc độ & mờ dần
+            if lk.logo and os.path.exists(lk.logo):
+                extra = ["-i", os.path.abspath(lk.logo)]
+            else:
+                lk.logo = ""
+        graph = filter_graph(info, cover, with_subs=True, look=lk, logo_idx=1 if extra else None)
         scale = f";[v]scale='min({max_w},iw)':-2[o]"
         r = _run([ffmpeg_exe(), "-hide_banner", "-y", "-ss", f"{max(0.0, at):.3f}", "-copyts",
-                  "-i", os.path.abspath(video), "-filter_complex", graph + scale, "-map", "[o]",
+                  "-i", os.path.abspath(video), *extra, "-filter_complex", graph + scale, "-map", "[o]",
                   "-frames:v", "1", os.path.abspath(out_png)], cwd=tmp)
         if r.returncode != 0 or not os.path.exists(out_png):
             raise RuntimeError(_ff_err(r.stderr))
@@ -299,8 +470,9 @@ def _ff_err(stderr: str) -> str:
 # ------------------------------------------------------------------ xuất video
 class Exporter:
     def __init__(self, video: str, cues, style: SubStyle, cover: Cover, opts: ExportOpts, out: str,
-                 progress=lambda pct, speed: None, log=print):
+                 progress=lambda pct, speed: None, log=print, look: Look | None = None):
         self.video, self.cues, self.style, self.cover = video, cues, style, cover
+        self.look = look or Look()
         self.opts, self.out, self.progress, self.log = opts, out, progress, log
         self.proc: subprocess.Popen | None = None
         self.stopped = threading.Event()
@@ -325,26 +497,39 @@ class Exporter:
         info = probe(self.video)
         tmp = tempfile.mkdtemp(prefix="st_render_")
         try:
-            _prepare(tmp, self.cues, self.style, info)
-            graph = filter_graph(info, self.cover, with_subs=True)
+            lk = self.look
+            dur = info["duration"] / lk.speed if lk.speed else info["duration"]
+            _prepare(tmp, scale_cues(self.cues, lk.speed), self.style, info)
+            ext_audio = bool(self.opts.audio_file and os.path.exists(self.opts.audio_file))
+            n_in = 2 if ext_audio else 1
+            logo_idx = music_idx = None
+            look_in = []
+            if lk.logo and os.path.exists(lk.logo):
+                logo_idx = n_in; n_in += 1; look_in += ["-i", os.path.abspath(lk.logo)]
+            if lk.music and os.path.exists(lk.music):
+                music_idx = n_in; n_in += 1; look_in += ["-stream_loop", "-1", "-i", os.path.abspath(lk.music)]
+            graph = filter_graph(info, self.cover, with_subs=True, look=lk, logo_idx=logo_idx, duration=dur)
+            has_a = info["has_audio"] or ext_audio
+            if has_a and lk.any_audio():
+                graph += ";" + audio_graph("1:a:0" if ext_audio else "0:a:0", lk, music_idx, dur)
             out_abs = os.path.abspath(self.out)
             Path(out_abs).parent.mkdir(parents=True, exist_ok=True)
-            ext_audio = self.opts.audio_file and os.path.exists(self.opts.audio_file)
-            tries = [self.opts.audio_copy, False] if (info["has_audio"] or ext_audio) else [False]
+            filtered_a = has_a and lk.any_audio()
+            tries = [self.opts.audio_copy and not filtered_a, False] if has_a else [False]
             for copy_audio in dict.fromkeys(tries):
-                src = "1:a:0" if ext_audio else "0:a:0?"
+                src = "[a]" if filtered_a else ("1:a:0" if ext_audio else "0:a:0?")
                 audio = (["-map", src, "-c:a", "copy"] if copy_audio else
                          ["-map", src, "-c:a", "aac", "-b:a", "192k"])
                 extra_in = ["-i", os.path.abspath(self.opts.audio_file)] if ext_audio else []
-                args = [ffmpeg_exe(), "-hide_banner", "-y", "-i", os.path.abspath(self.video), *extra_in,
+                args = [ffmpeg_exe(), "-hide_banner", "-y", "-i", os.path.abspath(self.video), *extra_in, *look_in,
                         "-filter_complex", graph, "-map", "[v]", *self._vcodec(), *audio,
-                        *(["-shortest"] if ext_audio else []),
+                        *(["-shortest"] if ext_audio else []), "-t", f"{dur:.3f}",
                         "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_abs]
                 self.log(f"  ffmpeg: {info['w']}x{info['h']}, {info['duration']:.0f}s, "
                          f"{'NVENC' if self.opts.encoder == 'nvenc' else 'x264 ' + self.opts.preset}"
                          f", âm thanh {'lồng tiếng' if ext_audio else 'gốc'} "
                          f"{'(giữ nguyên)' if copy_audio else '(nén lại AAC)'}")
-                code, err = self._exec(args, tmp, info["duration"])
+                code, err = self._exec(args, tmp, dur)
                 if self.stopped.is_set():
                     return "stopped"
                 if code == 0:

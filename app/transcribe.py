@@ -176,10 +176,11 @@ class Transcriber:
     event: callable = lambda e: None
     max_retries: int = 4
     speakers: bool = False
+    engine: str = ""          # "" = Gemini/Vertex nghe; hoặc id model Whisper Hugging Face chạy trên máy
 
     def __post_init__(self):
         self.providers = [p for p in self.providers if isinstance(p, VertexProvider)]
-        if not self.providers:
+        if not self.providers and not self.engine:
             raise ProviderError("Nghe giọng cần Vertex AI: bật “Dùng nhà cung cấp này khi dịch” "
                                 "cho Vertex AI (API key hoặc Service account JSON)")
         self.stop = self.stop or threading.Event()
@@ -237,6 +238,8 @@ class Transcriber:
             chunks = plan_chunks(dur, silences(wav))
             self.log(f"  Âm thanh dài {int(dur // 60)}:{int(dur % 60):02d} → {len(chunks)} đoạn, "
                      f"{min(self.threads, len(chunks))} luồng nghe")
+            if self.engine:
+                return self._run_whisper(wav, chunks, dur)
             data = [cut_chunk(wav, s, e, os.path.join(tmp, f"c{i}.mp3")) for i, (s, e) in enumerate(chunks)]
             for i, (s, e) in enumerate(chunks):
                 self._job(i, "queued", name=f"Nghe đoạn {i + 1}/{len(chunks)} · {_mmss(s)}–{_mmss(e)}",
@@ -255,6 +258,30 @@ class Transcriber:
             return merge_chunks(chunks, results)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def _run_whisper(self, wav: str, chunks, dur: float) -> list[Cue]:
+        from .hf_local import WhisperLocal
+        from .vocal import load_audio
+        w = WhisperLocal.get(self.engine, self.log)
+        self.event({"type": "stage", "stage": "listen", "text": f"Đang nạp {self.engine.split('/')[-1]}…"})
+        w.load()
+        audio = load_audio(wav, sr=16000, channels=1)[0]
+        self.log(f"  Whisper chạy trên {w.device}")
+        for i, (s, e) in enumerate(chunks):
+            self._job(i, "queued", name=f"Nghe đoạn {i + 1}/{len(chunks)} · {_mmss(s)}–{_mmss(e)}", info="đang chờ")
+        self.event({"type": "stage", "stage": "listen",
+                    "text": f"Whisper đang nghe giọng: {len(chunks)} đoạn, {_mmss(dur)} âm thanh"})
+        results: dict[int, list] = {}
+        self.progress(0, len(chunks))
+        for i, (s, e) in enumerate(chunks):
+            if self.stop.is_set():
+                return []
+            self._job(i, "run", src=f"Whisper · {w.device}", info=f"đang nghe {e - s:.0f}s")
+            segs = w.transcribe(audio[int(s * 16000):int(e * 16000)], self.lang)
+            results[i] = segs
+            self._job(i, "done", info=f"nghe được {len(segs)} câu")
+            self.progress(i + 1, len(chunks))
+        return merge_chunks(chunks, results)
 
 
 def merge_chunks(chunks: list[tuple[float, float]], results: dict[int, list]) -> list[Cue]:

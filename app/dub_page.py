@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 from . import srt
 from .dub import (
     Character, Line, MixOptions, Project, Stopped, TTSEngine, analyze_characters, auto_assign_voices, encode_m4a,
-    fit_lines, line_cache_path, lines_from_srt, mix, mux_video, synth_lines, workdir_for,
+    fit_lines, line_cache_path, lines_from_srt, mix, mux_video, scale_lines, speed_bg, synth_lines, tempo,
+    workdir_for,
 )
 from .transcribe import MEDIA_EXT
 
@@ -46,6 +47,11 @@ def _btn(t, k=None, tip=None):
     return btn(t, k, tip)
 
 
+def _ts(sec: float) -> str:
+    ms = int(round(max(0.0, sec) * 1000))
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
 def _fmt(sec: float) -> str:
     sec = max(0, int(sec))
     return f"{sec // 60}:{sec % 60:02d}"
@@ -66,10 +72,7 @@ class DubWorker(QThread):
         # chụp tuỳ chọn lúc bấm chạy (luồng nền không đọc thẳng widget)
         self.o = {"remove": page.rb_remove.isChecked(), "retr": page.chk_retr.isChecked(),
                   "skip_review": page.chk_skip_review.isChecked(), "export": page.chk_export.isChecked(),
-                  "mix": page.mix_options(), "hints": page.hints()}
-
-    def stop(self):
-        self.stop_event.set()
+                  "mix": page.mix_options(), "hints": page.hints(), "vis": page.visual_settings()}
 
     # ---------------------------------------------------------------- các bước
     def _sep(self):
@@ -94,7 +97,8 @@ class DubWorker(QThread):
         from .transcribe import Transcriber
         self.stage.emit("asr", "Gemini đang nghe giọng (kèm người nói, giới tính, cảm xúc)…")
         voc = os.path.join(p.workdir, "vocals.wav")
-        tc = Transcriber(p.providers(), p.src_lang, self.o['hints'], threads=6, stop=self.stop_event,
+        eng = p.cfg.get("asr", "")
+        tc = Transcriber(p.providers(), p.src_lang, self.o['hints'], threads=6, stop=self.stop_event, engine=eng,
                          log=self.log.emit, progress=self.progress.emit, speakers=True)
         cues = tc.run(voc if os.path.exists(voc) else p.video)
         if self.stop_event.is_set():
@@ -187,13 +191,52 @@ class DubWorker(QThread):
                 self.log.emit("  ⚠ Chưa có nhạc nền đã tách -> dùng tiếng gốc vặn nhỏ")
                 opt.remove_original = False
             bg = load_audio(p.video, sr=sr)
-        fitted = fit_lines(proj.lines, wavs, opt.max_speed, sr, log=self.log.emit)
-        out = mix(proj.lines, fitted, bg, opt, sr)
+        vs = opt.video_speed
+        lines = scale_lines(proj.lines, vs)
+        if abs(vs - 1) >= 0.005:
+            self.stage.emit("mix", f"Đang đổi tốc độ nhạc nền theo video {vs:g}x…")
+            bg = speed_bg(bg, vs, sr)
+            self._write_scaled_srt(lines)
+        gains = {l.index: (proj.char(l.speaker).volume if proj.char(l.speaker) else 1.0) for l in proj.lines}
+        self.stage.emit("mix", "Đang khớp thời gian và trộn với nhạc nền…")
+        fitted = fit_lines(lines, wavs, opt.max_speed, sr, log=self.log.emit)
+        out = mix(lines, fitted, bg, opt, sr, gains)
         tmp = os.path.join(p.workdir, "dub_mix.wav")
         save_wav(tmp, out, sr)
         encode_m4a(tmp, p.dub_audio_path())
         os.remove(tmp)
         self.log.emit(f"  ✔ Đã trộn → {p.dub_audio_path()}")
+
+    def _export_visual(self, out: str, vis: dict):
+        """Xuất kèm xoá/che chữ Trung, in phụ đề Việt, khung hình, logo, màu (dùng bộ xuất của tab Xuất video)."""
+        from .render import Exporter
+        p = self.p
+        cues = []
+        if vis["subs"]:
+            cues = [srt.Cue(i + 1, _ts(l.start), _ts(l.end), l.text)
+                    for i, l in enumerate(p.project.lines) if l.text.strip()]
+        self.stage.emit("mix", "Đang xuất video lồng tiếng (xoá chữ, phụ đề, khung hình, logo)…")
+        ex = Exporter(p.video, cues, vis["style"], vis["cover"], vis["opts"], out,
+                      progress=lambda pct, sp: self.progress.emit(int(pct), 100), log=self.log.emit, look=vis["look"])
+        self._exporter = ex
+        res = ex.run()
+        if res == "stopped":
+            raise Stopped()
+
+    def stop(self):
+        self.stop_event.set()
+        ex = getattr(self, "_exporter", None)
+        if ex:
+            ex.stop()
+
+    def _write_scaled_srt(self, lines):
+        """Video đổi tốc độ -> phụ đề Việt khớp với video mới để in ở tab Xuất video."""
+        p = self.p
+        out = str(Path(p.dub_video_path()).with_suffix("")) + ".vi.srt"
+        cues = [srt.Cue(i + 1, _ts(l.start), _ts(l.end), l.text) for i, l in enumerate(lines)]
+        with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
+            f.write(srt.compose(cues))
+        self.log.emit(f"  ✔ Phụ đề khớp tốc độ mới → {Path(out).name}")
 
     # ---------------------------------------------------------------- chạy
     def run(self):
@@ -220,7 +263,11 @@ class DubWorker(QThread):
             if (self.mode in ("auto", "voice") and self.o['export']) or self.mode == "export":
                 self.stage.emit("mix", "Đang ghép tiếng lồng vào video…")
                 out = p.dub_video_path()
-                mux_video(p.video, p.dub_audio_path(), out)
+                vis = self.o["vis"]
+                if vis is None:
+                    mux_video(p.video, p.dub_audio_path(), out, self.o["mix"].video_speed)
+                else:
+                    self._export_visual(out, vis)
                 self.log.emit(f"  ✔ Video lồng tiếng: {out}")
                 self.done.emit(out, "")
                 return
@@ -249,8 +296,9 @@ class _Job(QThread):
 
 # ====================================================================== trang
 class DubPage(QWidget):
-    def __init__(self, cfg: dict, save_cfg, log, providers_getter, out_dir_getter):
+    def __init__(self, cfg: dict, save_cfg, log, providers_getter, out_dir_getter, render_getter=None):
         super().__init__()
+        self.render_getter = render_getter or (lambda: None)
         self.cfg, self.save_cfg, self.main_log = cfg, save_cfg, log
         self.providers = providers_getter
         self.out_dir_getter = out_dir_getter
@@ -274,10 +322,62 @@ class DubPage(QWidget):
     def mix_options(self) -> MixOptions:
         return MixOptions(remove_original=self.rb_remove.isChecked(), duck=self.sl_duck.value() / 100,
                           voice_gain=self.sl_voice.value() / 100, bg_gain=self.sl_bg.value() / 100,
-                          max_speed=self.sp_speed.value())
+                          max_speed=self.sp_speed.value(), video_speed=self.sp_vspeed.value())
+
+    def _pick_logo(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Chọn logo", "", "Ảnh (*.png *.jpg *.jpeg *.webp)")
+        if f:
+            self.ed_logo.setText(f)
+
+    def _cover_obj(self):
+        from .render import Cover
+        mode = ["none", "erase", "blur", "box"][self.cb_cover.currentIndex()]
+        return Cover(mode=mode, y_pct=self.sp_cy.value(), h_pct=self.sp_ch.value(), x_pct=self.sp_cx.value(),
+                     blur=30, box_color="#000000", box_opacity=95)
+
+    def _align_in_render(self):
+        rp = self.render_getter()
+        if rp is None or not self.video:
+            return
+        win = self.window()
+        if hasattr(win, "_go_page"):
+            win._go_page(3)
+        rp.set_video(self.video)
+        idx = {"none": 0, "blur": 1, "box": 2, "erase": 3}[self._cover_obj().mode]
+        rp.cb_cover.setCurrentIndex(idx)
+        rp.sp_cy.setValue(self.sp_cy.value()); rp.sp_ch.setValue(self.sp_ch.value()); rp.sp_cx.setValue(self.sp_cx.value())
+        rp._dub_sync = self
+
+    def pull_cover_from_render(self, rp):
+        """Sau khi căn ở tab Xuất video, lấy lại vị trí vùng chữ."""
+        self.sp_cy.setValue(rp.sp_cy.value()); self.sp_ch.setValue(rp.sp_ch.value()); self.sp_cx.setValue(rp.sp_cx.value())
+        m = ["none", "blur", "box", "erase"][rp.cb_cover.currentIndex()]
+        self.cb_cover.setCurrentIndex({"none": 0, "erase": 1, "blur": 2, "box": 3}[m])
+
+    def visual_settings(self):
+        """None = chỉ thay tiếng (nhanh, không nén lại hình). Ngược lại: bộ tham số cho Exporter."""
+        from dataclasses import replace
+        from .render import ExportOpts, Look, SubStyle
+        cover = self._cover_obj()
+        aspect = self.cb_aspect.currentData() or ""
+        logo = self.ed_logo.text().strip()
+        rp = self.render_getter()
+        base_look = rp._look() if rp is not None else Look()
+        color = (base_look.zoom != 100 or base_look.flip or base_look.bright or base_look.contrast != 100
+                 or base_look.sat != 100 or base_look.sharpen or bool(base_look.music) or base_look.fade > 0)
+        if cover.mode == "none" and not self.chk_subs.isChecked() and not aspect and not logo and not color:
+            return None
+        look = replace(base_look, speed=self.sp_vspeed.value(), audio_sped=True, aspect=aspect,
+                       logo=logo, logo_pos=self.cb_logo_pos.currentData(), voice_vol=100, denoise=False)
+        style = rp._style() if rp is not None else SubStyle()
+        opts = rp._opts() if rp is not None else ExportOpts()
+        opts = replace(opts, audio_file=self.dub_audio_path(), audio_copy=False)
+        return {"cover": cover, "subs": self.chk_subs.isChecked(), "look": look, "style": style, "opts": opts}
 
     def dub_audio_path(self) -> str:
         p = Path(self.video)
+        if abs(self.sp_vspeed.value() - 1) >= 0.005:   # tiếng đã đổi tốc độ: không khớp video gốc
+            return str(Path(self.workdir) / f"{p.stem}.vi.dub.m4a")
         return str(Path(self.workdir).parent / f"{p.stem}.vi.dub.m4a")
 
     def dub_video_path(self) -> str:
@@ -325,6 +425,8 @@ class DubPage(QWidget):
         self.sl_bg = QSlider(Qt.Horizontal); self.sl_bg.setRange(0, 150); self.sl_bg.setValue(90)
         self.sp_speed = QDoubleSpinBox(); self.sp_speed.setRange(1.0, 1.8); self.sp_speed.setSingleStep(0.05)
         self.sp_speed.setValue(1.35); self.sp_speed.setSuffix(" x")
+        self.sp_vspeed = QDoubleSpinBox(); self.sp_vspeed.setRange(0.5, 2.0); self.sp_vspeed.setSingleStep(0.05)
+        self.sp_vspeed.setValue(1.0); self.sp_vspeed.setSuffix(" x")
         self.lb_duck = QLabel(); self.lb_voice = QLabel(); self.lb_bg = QLabel()
         for lb in (self.lb_duck, self.lb_voice, self.lb_bg):
             lb.setObjectName("hint"); lb.setMinimumWidth(40)
@@ -337,9 +439,15 @@ class DubPage(QWidget):
         v2.addWidget(self.duck_wrap)
         v2.addLayout(_field("Âm lượng giọng Việt", srow(self.sl_voice, self.lb_voice)))
         v2.addLayout(_field("Âm lượng nhạc nền", srow(self.sl_bg, self.lb_bg)))
-        v2.addLayout(_field("Đọc nhanh tối đa", self.sp_speed, "Câu dài hơn khoảng thời gian sẽ được đọc nhanh lên, tối đa mức này"))
+        sp_row = QHBoxLayout(); sp_row.setSpacing(12)
+        sp_row.addLayout(_field("Tốc độ video", self.sp_vspeed), 1)
+        sp_row.addLayout(_field("Đọc nhanh tối đa", self.sp_speed), 1)
+        v2.addLayout(sp_row)
+        h = QLabel("Tốc độ video: như nút Tốc độ của CapCut, đổi cả hình và nhạc nền, giọng Việt vẫn tự nhiên. "
+                   "Đọc nhanh tối đa: câu dài hơn chỗ trống được đọc nhanh lên tới mức này.")
+        h.setObjectName("hint"); h.setWordWrap(True); v2.addWidget(h)
 
-        c3, v3 = _card("Tuỳ chọn", "3")
+        c3, v3 = _card("Tuỳ chọn", "4")
         self.ed_hints = QLineEdit(); self.ed_hints.setPlaceholderText("Tên nhân vật/thuật ngữ, vd: 林澈 = Lâm Triệt; 师尊 = sư tôn")
         self.chk_retr = QCheckBox("Dịch lại kiểu lồng tiếng (kể cả khi đã có .vi.srt)")
         self.chk_skip_review = QCheckBox("Không dừng để kiểm tra giọng (chạy một mạch)")
@@ -350,10 +458,46 @@ class DubPage(QWidget):
         self.lb_engine = QLabel("VieNeu-TTS: chưa nạp"); self.lb_engine.setObjectName("hint"); self.lb_engine.setWordWrap(True)
         v3.addWidget(self.lb_engine)
 
+        c4, v4 = _card("Hình ảnh khi xuất", "3")
+        self.cb_cover = QComboBox()
+        self.cb_cover.addItems(["Giữ nguyên chữ Trung", "Xoá chữ Trung (nội suy nền)", "Làm mờ chữ Trung", "Che bằng hộp đen"])
+        self.sp_cy = QDoubleSpinBox(); self.sp_cy.setRange(0, 99); self.sp_cy.setSuffix(" %"); self.sp_cy.setValue(80)
+        self.sp_ch = QDoubleSpinBox(); self.sp_ch.setRange(1, 60); self.sp_ch.setSuffix(" %"); self.sp_ch.setValue(12)
+        self.sp_cx = QDoubleSpinBox(); self.sp_cx.setRange(0, 45); self.sp_cx.setSuffix(" %"); self.sp_cx.setValue(5)
+        self.chk_subs = QCheckBox("In phụ đề Việt lên video")
+        self.cb_aspect = QComboBox()
+        for label, val in (("Giữ nguyên khung", ""), ("9:16 · TikTok / Shorts", "9:16"), ("16:9 · YouTube", "16:9"),
+                           ("1:1 · vuông", "1:1"), ("4:5 · Facebook", "4:5")):
+            self.cb_aspect.addItem(label, val)
+        self.ed_logo = QLineEdit(); self.ed_logo.setPlaceholderText("Logo kênh của bạn (.png)")
+        self.btn_logo = _btn("Chọn…", "ghost")
+        self.cb_logo_pos = QComboBox()
+        for label, val in (("Trên phải", "tr"), ("Trên trái", "tl"), ("Dưới phải", "br"), ("Dưới trái", "bl")):
+            self.cb_logo_pos.addItem(label, val)
+        v4.addLayout(_field("Chữ Trung in sẵn trong video", self.cb_cover))
+        self.cover_wrap = QWidget(); cw = QHBoxLayout(self.cover_wrap); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(8)
+        cw.addLayout(_field("Từ trên xuống", self.sp_cy)); cw.addLayout(_field("Cao", self.sp_ch))
+        cw.addLayout(_field("Lề 2 bên", self.sp_cx))
+        v4.addWidget(self.cover_wrap)
+        v4.addWidget(self.chk_subs)
+        lr = QHBoxLayout(); lr.setSpacing(6); lr.addWidget(self.ed_logo, 1); lr.addWidget(self.btn_logo)
+        v4.addLayout(_field("Logo kênh của bạn", lr))
+        ar = QHBoxLayout(); ar.setSpacing(8)
+        ar.addLayout(_field("Khung hình", self.cb_aspect), 3); ar.addLayout(_field("Vị trí logo", self.cb_logo_pos), 2)
+        v4.addLayout(ar)
+        h4 = QLabel("Kiểu chữ phụ đề, màu sắc, phóng to, lật, nhạc nền thêm lấy theo tab “Xuất video Vietsub”. "
+                    "Bấm “Căn ở tab Xuất video” để xem trước vùng xoá chữ.")
+        h4.setObjectName("hint"); h4.setWordWrap(True); v4.addWidget(h4)
+        self.btn_align = _btn("Căn vùng chữ ở tab Xuất video →", "link"); v4.addWidget(self.btn_align)
+        self.cb_cover.currentIndexChanged.connect(lambda i: self.cover_wrap.setVisible(i != 0))
+        self.btn_logo.clicked.connect(self._pick_logo)
+        self.btn_align.clicked.connect(self._align_in_render)
+
         from PySide6.QtWidgets import QScrollArea
-        inner = QWidget(); left = QVBoxLayout(inner); left.setSpacing(14); left.setContentsMargins(0, 0, 8, 0)
-        left.addWidget(c1); left.addWidget(c2); left.addWidget(c3); left.addStretch(1)
-        lw = QScrollArea(); lw.setWidgetResizable(True); lw.setWidget(inner); lw.setFixedWidth(410)
+        inner = QWidget(); left = QVBoxLayout(inner); left.setSpacing(14); left.setContentsMargins(0, 0, 10, 0)
+        inner.setMaximumWidth(410)
+        left.addWidget(c1); left.addWidget(c2); left.addWidget(c4); left.addWidget(c3); left.addStretch(1)
+        lw = QScrollArea(); lw.setWidgetResizable(True); lw.setWidget(inner); lw.setFixedWidth(420)
         lw.setFrameShape(QFrame.NoFrame); lw.setObjectName("scroll")
         lw.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
@@ -370,11 +514,18 @@ class DubPage(QWidget):
         vr.addLayout(steps)
         self.tabs = QTabWidget(); self.tabs.setObjectName("dubTabs")
         # bảng nhân vật
-        self.tb_chars = QTableWidget(0, 5); self.tb_chars.setObjectName("jobs")
-        self.tb_chars.setHorizontalHeaderLabels(["Nhân vật", "Giới tính", "Vai trò / chất giọng", "Giọng VieNeu", ""])
-        self._table_style(self.tb_chars, [QHeaderView.ResizeToContents, QHeaderView.Fixed,
-                                          QHeaderView.Stretch, QHeaderView.Fixed, QHeaderView.Fixed])
-        self.tb_chars.setColumnWidth(1, 90); self.tb_chars.setColumnWidth(3, 250); self.tb_chars.setColumnWidth(4, 110)
+        self.tb_chars = QTableWidget(0, 7); self.tb_chars.setObjectName("jobs")
+        self.tb_chars.setHorizontalHeaderLabels(["Nhân vật", "Giới tính", "Giọng VieNeu",
+                                                 "Tốc độ", "Cao độ", "Âm lượng", ""])
+        self._table_style(self.tb_chars, [QHeaderView.Stretch, QHeaderView.Fixed, QHeaderView.Fixed,
+                                          QHeaderView.Fixed, QHeaderView.Fixed, QHeaderView.Fixed, QHeaderView.Fixed])
+        for col, wd in ((1, 82), (2, 168), (3, 82), (4, 70), (5, 92), (6, 36)):
+            self.tb_chars.setColumnWidth(col, wd)
+        self.tb_chars.verticalHeader().setDefaultSectionSize(48)
+        self.tb_chars.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.tb_chars.horizontalHeaderItem(3).setToolTip("Tốc độ đọc riêng của nhân vật (giữ nguyên cao độ)")
+        self.tb_chars.horizontalHeaderItem(4).setToolTip("Cao độ, nửa cung: âm = trầm hơn, dương = cao hơn (không đổi tốc độ)")
         # bảng câu
         self.tb_lines = QTableWidget(0, 6); self.tb_lines.setObjectName("jobs")
         self.tb_lines.setHorizontalHeaderLabels(["#", "Thời gian", "Nhân vật", "Lời Việt (sửa được)", "Lời gốc", ""])
@@ -452,11 +603,21 @@ class DubPage(QWidget):
         self.rb_duck.setChecked(not st.get("remove", True)); self.rb_remove.setChecked(st.get("remove", True))
         self.sl_duck.setValue(st.get("duck", 20)); self.sl_voice.setValue(st.get("voice", 100))
         self.sl_bg.setValue(st.get("bg", 90)); self.sp_speed.setValue(st.get("speed", 1.35))
+        self.sp_vspeed.setValue(st.get("vspeed", 1.0))
+        self.cb_cover.setCurrentIndex(st.get("cover", 0)); self.cover_wrap.setVisible(st.get("cover", 0) != 0)
+        self.sp_cy.setValue(st.get("cy", 80)); self.sp_ch.setValue(st.get("ch", 12)); self.sp_cx.setValue(st.get("cx", 5))
+        self.chk_subs.setChecked(st.get("subs", False))
+        self.cb_aspect.setCurrentIndex(max(0, self.cb_aspect.findData(st.get("aspect", ""))))
+        self.ed_logo.setText(st.get("logo", "")); self.cb_logo_pos.setCurrentIndex(max(0, self.cb_logo_pos.findData(st.get("logo_pos", "tr"))))
         self.chk_export.setChecked(st.get("export", True)); self.chk_skip_review.setChecked(st.get("skip_review", False))
 
     def store_state(self):
         self.cfg["dub"] = {"remove": self.rb_remove.isChecked(), "duck": self.sl_duck.value(),
-                           "voice": self.sl_voice.value(), "bg": self.sl_bg.value(), "speed": self.sp_speed.value(),
+                           "voice": self.sl_voice.value(), "bg": self.sl_bg.value(), "speed": self.sp_speed.value(), "vspeed": self.sp_vspeed.value(),
+                           "cover": self.cb_cover.currentIndex(), "cy": self.sp_cy.value(), "ch": self.sp_ch.value(),
+                           "cx": self.sp_cx.value(), "subs": self.chk_subs.isChecked(),
+                           "aspect": self.cb_aspect.currentData() or "", "logo": self.ed_logo.text().strip(),
+                           "logo_pos": self.cb_logo_pos.currentData(),
                            "export": self.chk_export.isChecked(), "skip_review": self.chk_skip_review.isChecked()}
 
     def set_video(self, path: str):
@@ -503,16 +664,21 @@ class DubPage(QWidget):
             counts[l.speaker] = counts.get(l.speaker, 0) + 1
         for c in proj.characters:
             r = self.tb_chars.rowCount(); self.tb_chars.insertRow(r)
-            self.tb_chars.setItem(r, 0, QTableWidgetItem(f"{c.name}  ({counts.get(c.name, 0)} câu)"))
-            g = QComboBox(); g.addItems(["", "nam", "nữ"]); g.setCurrentText(c.gender)
-            g.currentTextChanged.connect(lambda v, c=c: (setattr(c, "gender", v), self.project.save()))
+            it = QTableWidgetItem(f"{c.name}  ({counts.get(c.name, 0)} câu)" + (f"\n{c.desc}" if c.desc else ""))
+            it.setToolTip(c.desc)
+            self.tb_chars.setItem(r, 0, it)
+            g = QComboBox(); g.addItems(["?", "nam", "nữ"]); g.setCurrentText(c.gender or "?")
+            g.setStyleSheet(self._cell_css)
+            g.currentTextChanged.connect(lambda v, c=c: (setattr(c, "gender", "" if v == "?" else v), self.project.save()))
             self.tb_chars.setCellWidget(r, 1, g)
-            self.tb_chars.setItem(r, 2, QTableWidgetItem(c.desc))
-            cb = self._voice_combo(c.voice)
+            cb = self._voice_combo(c.voice); cb.setStyleSheet(self._cell_css)
             cb.currentIndexChanged.connect(lambda i, cb=cb, c=c: self._set_voice(c, cb.currentData()))
-            self.tb_chars.setCellWidget(r, 3, cb)
-            pb = _btn("▶ Nghe thử", "link"); pb.clicked.connect(lambda _=False, c=c: self._preview_voice(c))
-            self.tb_chars.setCellWidget(r, 4, pb)
+            self.tb_chars.setCellWidget(r, 2, cb)
+            self.tb_chars.setCellWidget(r, 3, self._spin(c, "speed", 0.7, 1.5, 0.05, "x", 2))
+            self.tb_chars.setCellWidget(r, 4, self._spin(c, "pitch", -8, 8, 1, "", 0))
+            self.tb_chars.setCellWidget(r, 5, self._spin(c, "volume", 0.3, 2.0, 0.1, "", 1, pct=True))
+            pb = _btn("▶", "link", f"Nghe thử giọng {c.name}"); pb.clicked.connect(lambda _=False, c=c: self._preview_voice(c))
+            self.tb_chars.setCellWidget(r, 6, pb)
         self.tb_lines.blockSignals(True)
         self.tb_lines.setRowCount(0)
         names = [c.name for c in proj.characters]
@@ -536,6 +702,29 @@ class DubPage(QWidget):
         if proj.lines:
             self.tabs.setTabText(1, f"Câu thoại ({len(proj.lines)})")
             self.tabs.setTabText(0, f"Nhân vật && giọng ({len(proj.characters)})")
+
+    _cell_css = "QComboBox { padding: 3px 16px 3px 6px; } QComboBox::drop-down { width: 16px; }"
+
+    def _spin(self, c: Character, attr: str, lo, hi, step, suffix, dec, pct=False):
+        """Ô chọn nhanh như các nấc của CapCut (tốc độ / cao độ / âm lượng)."""
+        cb = QComboBox(); cb.setStyleSheet(self._cell_css)
+        vals, v = [], lo
+        while v <= hi + 1e-9:
+            vals.append(round(v, 2)); v += step
+        cur = round(getattr(c, attr), 2)
+        if cur not in vals:
+            vals.append(cur); vals.sort()
+        for x in vals:
+            if pct:
+                label = f"{int(round(x * 100))}%"
+            elif attr == "pitch":
+                label = "0" if x == 0 else f"{x:+.0f}"
+            else:
+                label = f"{x:.2f}".rstrip("0").rstrip(".") + suffix
+            cb.addItem(label, x)
+        cb.setCurrentIndex(vals.index(cur))
+        cb.currentIndexChanged.connect(lambda _: (setattr(c, attr, float(cb.currentData())), self.project.save()))
+        return cb
 
     def _set_voice(self, c: Character, vid):
         c.voice = vid or ""
@@ -588,27 +777,24 @@ class DubPage(QWidget):
         def go():
             text = f"Ta là {c.name}. Hôm nay trời trong gió nhẹ, đúng là ngày lành để lên đường."
             self.lb_stage.setText(f"Đang đọc thử giọng cho {c.name}…")
-            self._pjob = _Job(lambda: self._synth_tmp(text, c.voice))
+            self._pjob = _Job(lambda: self._synth_tmp(text, c.voice, c.speed, c.pitch))
             self._pjob.result.connect(lambda path, err: self._play(path) if path else self.lb_stage.setText(f"✖ {err}"))
             self._pjob.start()
         self._ensure_voices(go)
 
-    def _synth_tmp(self, text: str, voice: str) -> str:
+    def _synth_tmp(self, text: str, voice: str, speed: float = 1.0, pitch: float = 0.0) -> str:
         from .vocal import save_wav
-        w = self.engine.synth(text, voice)
-        path = os.path.join(tempfile.gettempdir(), f"st_voice_{abs(hash((text, voice)))}.wav")
+        w = tempo(self.engine.synth(text, voice), speed, self.engine.sr, pitch)
+        path = os.path.join(tempfile.gettempdir(), f"st_voice_{abs(hash((text, voice, speed, pitch)))}.wav")
         save_wav(path, w, self.engine.sr)
         return path
 
     def _play_line(self, l: Line):
-        path = line_cache_path(self.project, l, os.path.join(self.workdir, "tts"))
-        if os.path.exists(path):
-            self._play(path)
-            return
         ch = self.project.char(l.speaker)
 
         def go():
-            self._pjob = _Job(lambda: self._synth_tmp(l.text, ch.voice if ch else ""))
+            self._pjob = _Job(lambda: self._synth_tmp(l.text, ch.voice if ch else "",
+                                                      ch.speed if ch else 1.0, ch.pitch if ch else 0.0))
             self._pjob.result.connect(lambda p, err: self._play(p) if p else self.lb_stage.setText(f"✖ {err}"))
             self._pjob.start()
         self._ensure_voices(go)

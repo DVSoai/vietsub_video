@@ -63,6 +63,18 @@ PROVIDERS: dict[str, dict] = {
         "base_url": "https://openrouter.ai/api/v1",
         "models": [],
     },
+    "Hugging Face (Inference API)": {
+        "kind": "openai",
+        "base_url": "https://router.huggingface.co/v1",
+        "models": ["deepseek-ai/DeepSeek-V3-0324", "Qwen/Qwen2.5-72B-Instruct", "Qwen/Qwen3-235B-A22B-Instruct-2507",
+                   "meta-llama/Llama-3.3-70B-Instruct", "moonshotai/Kimi-K2-Instruct"],
+    },
+    "Hugging Face trên máy (miễn phí)": {
+        "kind": "hf_local",
+        "base_url": "local",
+        "models": ["Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-14B-Instruct",
+                   "Qwen/Qwen2.5-1.5B-Instruct"],
+    },
     "Tùy chỉnh (chuẩn OpenAI)": {
         "kind": "openai",
         "base_url": "",
@@ -328,6 +340,11 @@ def make_provider(name: str, api_key: str, model: str, base_url: str | None = No
     if cfg["kind"] == "vertex_sa":
         prov = VertexSAProvider(api_key, model, (base_url or "").strip(), project, location)
         prov.label = f"Vertex AI · {model} · {prov.project}"
+        return prov
+    if cfg["kind"] == "hf_local":
+        from .hf_local import HFLocalChat
+        prov = HFLocalChat("", model, "local")
+        prov.label = f"Máy mình · {model.split('/')[-1]}"
         return prov
     url = (base_url or cfg["base_url"]).strip()
     if not url:

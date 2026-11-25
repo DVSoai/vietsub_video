@@ -6,6 +6,8 @@ REM PyTorch ban CUDA 12.8 (ho tro RTX 50-series)
 python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install "transformers==4.57.6" safetensors
 python -m pip install vieneu
+REM Model Hugging Face chay tren may: Whisper (nghe giong) + Qwen (dich), nen 4-bit cho card 8 GB
+python -m pip install accelerate bitsandbytes
 REM Tach giong chay tren card: thay onnxruntime CPU bang ban GPU
 python -m pip uninstall -y onnxruntime
 python -m pip install onnxruntime-gpu
