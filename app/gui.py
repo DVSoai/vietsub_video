@@ -322,7 +322,7 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub", "5 · Quản lý AI")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
@@ -562,6 +562,23 @@ class MainWindow(QMainWindow):
                                 lambda: self.ed_output.text().strip(), lambda: self.render_page)
         self.stack.addWidget(self._scroll(self.dub_page))      # 2 · Lồng tiếng
         self.stack.addWidget(self._scroll(self.render_page))   # 3 · Xuất video Vietsub
+        self.ai_page = QWidget()
+        ai_layout = QVBoxLayout(self.ai_page)
+        ai_card, ai_body = card("Quản lý AI", "5")
+        ai_intro = QLabel("Quản lý API key dùng chung cho Dịch phụ đề và Lồng tiếng.")
+        ai_intro.setWordWrap(True)
+        ai_body.addWidget(ai_intro)
+        self.ai_status = QLabel(); self.ai_status.setWordWrap(True)
+        ai_body.addWidget(self.ai_status)
+        ai_connect = btn("Kết nối nhà cung cấp AI", "ghost")
+        ai_connect.clicked.connect(self.open_free_keys)
+        ai_body.addWidget(ai_connect)
+        ai_settings = btn("Chọn model và cấu hình nâng cao", "ghost")
+        ai_settings.clicked.connect(lambda: self._go_page(1))
+        ai_body.addWidget(ai_settings)
+        ai_layout.addWidget(ai_card)
+        ai_layout.addStretch(1)
+        self.stack.addWidget(self._scroll(self.ai_page))
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -657,8 +674,12 @@ class MainWindow(QMainWindow):
         return sa
 
     def _go_page(self, i: int):
+        if not 0 <= i < self.stack.count():
+            i = 1
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
+        if i == 4:
+            self._refresh_ai_page()
         if self.cfg.get("page") == 3 and i == 2 and getattr(self.render_page, "_dub_sync", None):
             self.dub_page.pull_cover_from_render(self.render_page)
             self.render_page._dub_sync = None
@@ -945,6 +966,18 @@ class MainWindow(QMainWindow):
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
 
+    def _refresh_ai_page(self):
+        self._save_provider_state(self.cb_provider.currentText())
+        rows = []
+        for name in PROVIDERS:
+            pc = self.cfg.get("per_provider", {}).get(name, {})
+            count = len([k for k in pc.get("keys", "").splitlines() if k.strip()])
+            status = "Đang bật" if pc.get("enabled") and count else ("Đã có key" if count else "Chưa có key")
+            if PROVIDERS[name]["kind"] == "hf_local":
+                status = "Chạy cục bộ — không cần key"
+            rows.append(f"{name}: {status}")
+        self.ai_status.setText("\n".join(rows))
+
     def open_free_keys(self):
         """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
         from .free_keys_dialog import FreeKeysDialog
@@ -959,6 +992,8 @@ class MainWindow(QMainWindow):
             n = sum(1 for pc in self.cfg.get("per_provider", {}).values() if pc.get("enabled") and pc.get("keys"))
             self._log(f"✔ Đã bật nhà cung cấp miễn phí. Đang dùng {n} nhà, hết lượt nhà này sẽ tự sang nhà khác.")
         self._refresh_using()
+        if hasattr(self, "ai_status"):
+            self._refresh_ai_page()
 
     def _test_conn(self):
         try:
