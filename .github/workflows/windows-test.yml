@@ -45,6 +45,9 @@ jobs:
       - name: test_ai_connect (DPAPI that tren Windows)
         if: always()
         run: python tests/run_check.py tests/test_ai_connect.py
+      - name: test_bilibili_browse (duyệt theo mục, máy chủ giả lập)
+        if: always()
+        run: python tests/run_check.py tests/test_bilibili_browse.py
       - name: test_free_keys_dialog
         if: always()
         run: python tests/run_check.py tests/test_free_keys_dialog.py
