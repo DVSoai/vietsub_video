@@ -370,7 +370,10 @@ class MainWindow(QMainWindow):
         sw.addLayout(field("Location", self.cb_location), 2)
         v1.addLayout(kv)
         v1.addWidget(self.sa_wrap)
-        trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_test)
+        self.btn_free = btn("✨ AI miễn phí…", "ghost", "Lấy key miễn phí một lần (Groq, Cerebras, NVIDIA, SiliconFlow, "
+                            "Zhipu, Gemini, OpenRouter) — app tự nhận, tự kiểm tra, tự bật")
+        trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_free)
+        trow.addWidget(self.btn_test)
         v1.addLayout(trow)
         v1.addWidget(self.lb_using)
         v1.addStretch(1)
@@ -579,6 +582,7 @@ class MainWindow(QMainWindow):
         self.btn_edit_prompt.clicked.connect(self._edit_prompt)
         self.btn_del_prompt.clicked.connect(self._delete_prompt)
         self.btn_test.clicked.connect(self._test_conn)
+        self.btn_free.clicked.connect(self.open_free_keys)
         self.btn_run.clicked.connect(lambda: self._start("translate"))
         self.btn_fix.clicked.connect(lambda: self._start("fix"))
         self.btn_stop.clicked.connect(self._stop)
@@ -925,6 +929,21 @@ class MainWindow(QMainWindow):
         self.cfg.setdefault("per_provider", {}).setdefault(
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
+
+    def open_free_keys(self):
+        """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
+        from .free_keys_dialog import FreeKeysDialog
+        cur = self.cb_provider.currentText()
+        self._save_provider_state(cur)            # ghi lại ô đang sửa trước khi hộp thoại đổi cfg
+        dlg = FreeKeysDialog(self.cfg, self)
+        dlg.exec()
+        if dlg.changed:
+            self._current_provider = None          # nạp lại ô key của nhà cung cấp đang chọn từ cfg
+            self._on_provider(cur)
+            self._save_cfg()
+            n = sum(1 for pc in self.cfg.get("per_provider", {}).values() if pc.get("enabled") and pc.get("keys"))
+            self._log(f"✔ Đã bật nhà cung cấp miễn phí. Đang dùng {n} nhà, hết lượt nhà này sẽ tự sang nhà khác.")
+        self._refresh_using()
 
     def _test_conn(self):
         try:

@@ -526,6 +526,10 @@ class DubPage(QWidget):
         self.chk_export.setChecked(True)
         v3.addLayout(_field("Gợi ý tên riêng", self.ed_hints))
         v3.addWidget(self.chk_retr); v3.addWidget(self.chk_skip_review); v3.addWidget(self.chk_export)
+        self.btn_free_ai = _btn("✨ Kết nối AI miễn phí (không tốn tiền)…", "link",
+                                "Nghe giọng/dịch/nhận diện nhân vật cần AI: lấy key miễn phí một lần, app tự bật")
+        self.btn_free_ai.clicked.connect(lambda: self.window().open_free_keys() if hasattr(self.window(), "open_free_keys") else None)
+        v3.addWidget(self.btn_free_ai)
         self.lb_engine = QLabel("VieNeu-TTS: chưa nạp"); self.lb_engine.setObjectName("hint"); self.lb_engine.setWordWrap(True)
         v3.addWidget(self.lb_engine)
 
