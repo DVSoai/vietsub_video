@@ -293,7 +293,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Subtitle Translator")
         self.setWindowIcon(theme.app_icon())
         self.resize(1180, 860)
-        self.setMinimumSize(1000, 840)
+        # màn hình thấp (1366×768…): cửa sổ được nhỏ lại, nội dung từng tab tự cuộn thay vì bị ép
+        self.setMinimumSize(980, 560)
+        scr = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        if scr is not None:
+            self.resize(min(1180, scr.width() - 20), min(860, scr.height() - 30))
         PROMPTS.mkdir(parents=True, exist_ok=True)
         self.cfg = self._load_cfg()
         self.worker: Worker | None = None
@@ -538,13 +542,13 @@ class MainWindow(QMainWindow):
         from .search_page import SearchPage
         self.search_page = SearchPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers)
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.search_page)   # 0 · Tìm & tải phim
-        self.stack.addWidget(page1)              # 1 · Dịch phụ đề
+        self.stack.addWidget(self._scroll(self.search_page))   # 0 · Tìm & tải phim
+        self.stack.addWidget(self._scroll(page1))              # 1 · Dịch phụ đề
         from .dub_page import DubPage
         self.dub_page = DubPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers,
                                 lambda: self.ed_output.text().strip(), lambda: self.render_page)
-        self.stack.addWidget(self.dub_page)      # 2 · Lồng tiếng
-        self.stack.addWidget(self.render_page)   # 3 · Xuất video Vietsub
+        self.stack.addWidget(self._scroll(self.dub_page))      # 2 · Lồng tiếng
+        self.stack.addWidget(self._scroll(self.render_page))   # 3 · Xuất video Vietsub
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -617,6 +621,18 @@ class MainWindow(QMainWindow):
         if PROVIDERS[name]["kind"] == "vertex_sa":
             pc["project"] = self.ed_project.text().strip()
             pc["location"] = self.cb_location.currentText().strip() or "global"
+
+    @staticmethod
+    def _scroll(page: QWidget) -> QWidget:
+        """Bọc trang trong vùng cuộn: đủ chỗ thì giãn hết, thiếu chỗ thì cuộn chứ không đè lên nhau."""
+        from PySide6.QtWidgets import QScrollArea
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setObjectName("pageScroll")
+        sa.setStyleSheet("QScrollArea#pageScroll, QScrollArea#pageScroll > QWidget > QWidget { background: transparent; }")
+        sa.setWidget(page)
+        return sa
 
     def _go_page(self, i: int):
         self.stack.setCurrentIndex(i)
