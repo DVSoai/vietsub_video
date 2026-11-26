@@ -13,11 +13,12 @@ g.DATA = d; g.PROMPTS = d / "prompts"; g.CONFIG = d / "settings.json"
 a = QApplication(sys.argv)
 w = g.MainWindow(); w.show()
 def step():
-    if mode == "dialog":
+    if "dialog" in mode:
         from app.free_keys_dialog import FreeKeysDialog
         dl = FreeKeysDialog(w.cfg, w); dl.show(); QTimer.singleShot(300, dl.accept)
-    w.cfg.setdefault("per_provider", {})["Groq (miễn phí)"] = {"keys": "gsk_" + "T" * 40, "enabled": True}
-    w._save_cfg()
+    if "save" in mode:
+        w.cfg.setdefault("per_provider", {})["Groq (miễn phí)"] = {"keys": "gsk_" + "T" * 40, "enabled": True}
+        w._save_cfg()
     QTimer.singleShot(800, w.close)
 QTimer.singleShot(500, step)
 r = a.exec()

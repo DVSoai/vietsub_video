@@ -1,7 +1,7 @@
 name: windows-test
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/provider-*"]
   pull_request:
   workflow_dispatch:
 jobs:

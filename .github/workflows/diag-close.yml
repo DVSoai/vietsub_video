@@ -1,0 +1,25 @@
+name: diag-close
+on:
+  push:
+    branches: ["feat/diag-close2"]
+jobs:
+  diag:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - shell: cmd
+        run: |
+          for %%m in (plain dialog save dialog_save) do (
+            for /L %%i in (1,1,12) do (
+              python tests\win_close_check.py . %%m >NUL 2>NUL
+              call echo KQ %%m=%%ERRORLEVEL%%
+            )
+          )
+          exit /b 0
