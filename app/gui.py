@@ -301,6 +301,7 @@ class MainWindow(QMainWindow):
             self.resize(min(1180, scr.width() - 20), min(860, scr.height() - 30))
         PROMPTS.mkdir(parents=True, exist_ok=True)
         self.cfg = self._load_cfg()
+        migrate_models(self.cfg)
         self.worker: Worker | None = None
         self.files: list[str] = []
         self.t0 = 0.0
@@ -986,6 +987,8 @@ class MainWindow(QMainWindow):
         if err:
             self._log(f"✖ Không lấy được model: {err}")
             return
+        from .providers import RETIRED
+        models = [m for m in models if m not in RETIRED.get(self.cb_provider.currentText(), {})]  # còn ghi nhưng đã tắt
         cur = self.cb_model.currentText()
         self.cb_model.clear()
         self.cb_model.addItems(models)
@@ -1377,6 +1380,21 @@ def main():
     code = app.exec()
     teardown(app, w, code)
     sys.exit(code)
+
+
+def migrate_models(cfg: dict) -> list[str]:
+    """Đổi model đã bị nhà cung cấp tắt (vd. Groq llama-3.3-70b-versatile) trong cấu hình cũ sang model thay thế."""
+    from .providers import RETIRED, current_model
+    changed = []
+    for name, pc in cfg.get("per_provider", {}).items():
+        old = pc.get("model", "")
+        new = current_model(name, old)
+        if new != old:
+            pc["model"] = new
+            changed.append(f"{name}: {old} → {new}")
+        if pc.get("models_cache"):
+            pc["models_cache"] = [m for m in pc["models_cache"] if m not in RETIRED.get(name, {})]
+    return changed
 
 
 def teardown(app, w, code: int = 0):
