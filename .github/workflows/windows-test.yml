@@ -34,6 +34,17 @@ jobs:
           python tests/test_ai_connect.py > NUL 2> err.txt
           echo test_ai_connect=%ERRORLEVEL%
           type err.txt
+          git fetch --depth=1 origin 45e26416d55416cedc5ce12aa88c254f4d60f1e7
+          git worktree add main_ver FETCH_HEAD
+          python tests/win_close_check.py main_ver plain
+          echo MAIN_mo_dong_app=%ERRORLEVEL%
+          python tests/win_close_check.py main_ver dialog
+          echo MAIN_mo_dong_app_co_hop_thoai=%ERRORLEVEL%
+          python tests/win_close_check.py . plain
+          echo NHANH_mo_dong_app=%ERRORLEVEL%
+          python tests/win_close_check.py . dialog
+          echo NHANH_mo_dong_app_co_hop_thoai=%ERRORLEVEL%
+          type %TEMP%\closecheck_plain\settings.json
           exit /b 0
       - name: test_ai_connect (DPAPI that tren Windows)
         run: python tests/test_ai_connect.py
