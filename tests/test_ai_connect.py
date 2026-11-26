@@ -196,7 +196,7 @@ nav_ok = all(b.isVisible() and b.width() > 0 for b in w2.nav_btns)
 rec("A7", "Tab 5 · Quản lý AI hiện trạng thái từng nhà; 5 nút tab hiện đủ ở 1366 px",
     "Groq (miễn phí): Đang bật" in st and nav_ok, f"{len(st.splitlines())} dòng, nav rộng={[b.width() for b in w2.nav_btns]}")
 w2.ai_provider.setCurrentText(NV); pump(0.1)
-w2.ai_model.setCurrentText("deepseek-ai/deepseek-v3.1"); w2.ai_keys.setText("nvapi-" + "e" * 40); w2.ai_enabled.setChecked(True)
+w2.ai_model.setCurrentText("moonshotai/kimi-k3.1-pro"); w2.ai_keys.setText("nvapi-" + "e" * 40); w2.ai_enabled.setChecked(True)
 w2._save_ai_editor(); pump(0.1)
 pe = dict(w2.cfg["per_provider"][NV])
 in_tab2 = [p.label for p in w2._make_translate_providers()]

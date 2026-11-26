@@ -41,7 +41,7 @@ PROVIDERS: dict[str, dict] = {
     "Gemini": {
         "kind": "openai",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "models": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
+        "models": ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
     },
     "Vertex AI (API key)": {
         "kind": "vertex",
@@ -106,7 +106,7 @@ PROVIDERS: dict[str, dict] = {
     "NVIDIA NIM (miễn phí)": {
         "kind": "openai",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "models": ["deepseek-ai/deepseek-v3.1"],
+        "models": ["moonshotai/kimi-k3.1-pro", "z-ai/glm-5.3-flash", "mistralai/mistral-large-4-1t-a52b"],
         "free": True, "rpm": 35, "concurrency": 3,
         "signup": "https://build.nvidia.com/settings/api-keys",
         "note": "Hơn 100 model (DeepSeek, Qwen, Llama, Kimi…), giới hạn ~40 request/phút. Bấm “Lấy model” để xem đủ.",
@@ -114,7 +114,7 @@ PROVIDERS: dict[str, dict] = {
     "SiliconFlow (miễn phí)": {
         "kind": "openai",
         "base_url": "https://api.siliconflow.cn/v1",
-        "models": ["Qwen/Qwen3-8B", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", "THUDM/glm-4-9b-chat"],
+        "models": ["Qwen/Qwen3-8B", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"],
         "free": True, "rpm": 25, "concurrency": 2,
         "signup": "https://cloud.siliconflow.cn",
         "note": "Nền tảng Trung Quốc, model tiếng Trung tốt. Một số model miễn phí vĩnh viễn; đăng ký cần số điện thoại.",
@@ -122,7 +122,7 @@ PROVIDERS: dict[str, dict] = {
     "Zhipu GLM (miễn phí)": {
         "kind": "openai",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "models": ["glm-4.7-flash", "glm-4.5-flash"],
+        "models": ["glm-4.7-flash"],
         "free": True, "rpm": 20, "concurrency": 1,
         "signup": "https://open.bigmodel.cn",
         "note": "GLM-Flash miễn phí nhưng chỉ chạy 1 request cùng lúc cho mỗi key.",
@@ -423,7 +423,15 @@ RETIRED = {
         "meta-llama/llama-4-maverick-17b-128e-instruct": "openai/gpt-oss-120b",
         "moonshotai/kimi-k2-instruct-0905": "openai/gpt-oss-120b", "gemma2-9b-it": "openai/gpt-oss-20b",
     },
+    "NVIDIA NIM (miễn phí)": {   # danh sách công khai integrate.api.nvidia.com/v1/models (26/11/2026) không còn DeepSeek
+        "deepseek-ai/deepseek-v3.1": "moonshotai/kimi-k3.1-pro", "deepseek-ai/deepseek-r1": "moonshotai/kimi-k3.1-pro",
+        "deepseek-ai/deepseek-v3.1-terminus": "moonshotai/kimi-k3.1-pro",
+        "deepseek-ai/deepseek-v4-pro": "moonshotai/kimi-k3.1-pro", "deepseek-ai/deepseek-v4-flash": "z-ai/glm-5.3-flash",
+    },
+    "SiliconFlow (miễn phí)": {"THUDM/glm-4-9b-chat": "Qwen/Qwen3-8B", "Qwen/Qwen2-7B-Instruct": "Qwen/Qwen3-8B"},  # ngừng 17/3/2026
+    "Zhipu GLM (miễn phí)": {"glm-4.5-flash": "glm-4.7-flash"},                                                # ngừng 30/1/2026
     "Cerebras (miễn phí)": {
+        "gemma-4-31b": "qwen-3.8-27b",
         "llama3.1-8b": "gpt-oss-120b", "llama-3.3-70b": "gpt-oss-120b", "zai-glm-4.7": "gpt-oss-120b",
         "zai-glm-4.6": "gpt-oss-120b", "qwen-3-235b-a22b-instruct-2507": "gpt-oss-120b",
     },

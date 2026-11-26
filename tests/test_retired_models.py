@@ -161,6 +161,19 @@ rec("R7", "Nhận đúng lỗi 'model không tồn tại' nhưng không nhầm v
     model_gone("HTTP 404: The model `x` does not exist or you do not have access to it.")
     and not model_gone("HTTP 401: Invalid API Key") and not model_gone("HTTP 429: Rate limit reached"), "404 model / 401 / 429")
 
+from app.providers import RETIRED, current_model  # noqa: E402
+bad_defaults = [(n, m) for n, c in PROVIDERS.items() for m in (c.get("models") or []) if m in RETIRED.get(n, {})]
+maps = {
+    ("NVIDIA NIM (miễn phí)", "deepseek-ai/deepseek-v3.1"): "moonshotai/kimi-k3.1-pro",
+    ("SiliconFlow (miễn phí)", "THUDM/glm-4-9b-chat"): "Qwen/Qwen3-8B",
+    ("Zhipu GLM (miễn phí)", "glm-4.5-flash"): "glm-4.7-flash",
+    ("Cerebras (miễn phí)", "gemma-4-31b"): "qwen-3.8-27b",
+    ("Groq (miễn phí)", "qwen/qwen3.6-27b"): "openai/gpt-oss-120b",
+}
+wrong = {k: current_model(*k) for k, v in maps.items() if current_model(*k) != v}
+rec("R8", "Các nhà miễn phí khác: danh sách mặc định không còn model đã ngừng; model cũ tự đổi đúng",
+    not bad_defaults and not wrong, f"model ngừng còn trong danh sách={bad_defaults}, đổi sai={wrong}")
+
 print(f"\n{sum(RES)}/{len(RES)} PASS", flush=True)
 sys.stdout.flush()
 os._exit(0 if all(RES) else 1)
