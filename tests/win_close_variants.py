@@ -19,9 +19,16 @@ def step():
     QTimer.singleShot(900, w.close)
 QTimer.singleShot(500, step)
 r = a.exec()
-if mode in ("delete", "both"):
+import gc
+if mode == "delete":            # xoá biến cửa sổ rồi mới shutdown
     w.deleteLater(); a.processEvents(); del w
     a.shutdown()
+if mode == "keepref":           # giữ biến cửa sổ khi shutdown (như teardown() bản vừa đẩy)
+    w.deleteLater(); a.processEvents()
+    a.shutdown()
+if mode == "gc":                # xoá biến + gc + xoá app
+    w.deleteLater(); a.processEvents(); del w; gc.collect()
+    a.shutdown(); del a; gc.collect()
 if mode in ("exit", "both"):
     sys.stdout.flush(); sys.stderr.flush(); os._exit(r)
 sys.exit(r)
