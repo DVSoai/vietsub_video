@@ -26,6 +26,8 @@ class Settings:
     max_retries: int = 5
     custom_prompt: str = ""
     dub_durations: dict = None  # {id: giây} -> dịch kiểu lồng tiếng (vừa thời lượng nói)
+    glossary: dict = None       # {thuật ngữ gốc: cách dịch bắt buộc} dùng chung cả bộ phim
+    refine: bool = False        # dịch kỹ: thêm lượt biên tập (rà lại + viết lại tự nhiên)
 
 
 class Stopped(Exception):
@@ -87,6 +89,39 @@ def parse_json_reply(text: str) -> dict[str, str]:
     return {str(k).strip(): ("" if v is None else str(v)) for k, v in obj.items()}
 
 
+# ---------------------------------------------------------------- thuật ngữ
+def glossary_for(text: str, glossary: dict | None) -> dict[str, str]:
+    """Các thuật ngữ thật sự xuất hiện trong đoạn này (để không gửi cả bảng mỗi lần)."""
+    if not glossary:
+        return {}
+    return {k: v for k, v in glossary.items() if k and v and k in text}
+
+
+def glossary_miss(src: str, dst: str | None, glossary: dict | None) -> list[str]:
+    """Thuật ngữ có trong câu gốc nhưng bản dịch không dùng đúng cách dịch đã chốt."""
+    if not glossary or not dst:
+        return []
+    low = dst.lower()
+    return [k for k, v in glossary_for(src, glossary).items() if v.lower() not in low]
+
+
+def glossary_block(terms: dict[str, str]) -> str:
+    if not terms:
+        return ""
+    return ("THUẬT NGỮ BẮT BUỘC (dùng đúng cách dịch này, kể cả khi có thể dịch khác):\n"
+            + "\n".join(f"- {k} = {v}" for k, v in terms.items()) + "\n\n")
+
+
+REFINE_PROMPT = (
+    "Bạn là biên tập viên phụ đề {tgt}. Mỗi mục có câu gốc ({src}) và bản dịch nháp.\n"
+    "Hãy rà lại và viết lại bản dịch: sửa chỗ dịch sai ý, sai xưng hô, sai thuật ngữ; viết lại cho tự nhiên như "
+    "người {tgt} nói, ngắn gọn, đúng giọng nhân vật. Giữ nguyên các thẻ <i>, {{\\an8}}, \\n nếu có.\n"
+    "Nếu bản nháp đã tốt thì giữ nguyên. Không thêm giải thích.\n"
+    "Đầu vào: JSON {{\"id\": {{\"goc\": \"...\", \"nhap\": \"...\"}}}}. "
+    "Chỉ trả về JSON {{\"id\": \"bản dịch cuối\"}} có ĐÚNG các id đó, không markdown."
+)
+
+
 def needs_retranslation(src: str, dst: str | None, source_lang: str) -> bool:
     if dst is None or not dst.strip():
         return bool(src.strip())
@@ -120,6 +155,9 @@ class Translator:
             self.providers = [self.providers]
         self.limiter = RateLimiter(self.settings.rpm)
         self.system = build_system_prompt(self.settings)
+        self.refine_system = REFINE_PROMPT.format(src=self.settings.source_lang, tgt=self.settings.target_lang)
+        if self.settings.custom_prompt.strip():
+            self.refine_system += "\n\nHướng dẫn riêng cho phim này:\n" + self.settings.custom_prompt.strip()
         self._rr = 0
         self._rr_lock = threading.Lock()
         self._dead: set[int] = set()
@@ -153,7 +191,21 @@ class Translator:
     def _translate_batch(self, items: dict[str, str], jid: str = "") -> dict[str, str]:
         durs = self.settings.dub_durations or {}
         send = {k: (f"{v} ⟪{float(durs[k]):.1f}s⟫" if k in durs else v) for k, v in items.items()}
-        user = json.dumps(send, ensure_ascii=False)
+        terms = glossary_for("\n".join(items.values()), self.settings.glossary)
+        user = glossary_block(terms) + json.dumps(send, ensure_ascii=False)
+        got = self._ask(self.system, user, items, jid, "dịch")
+        if got and self.settings.refine and not self.stop.is_set():
+            draft = {k: {"goc": items[k], "nhap": got[k]} for k in got}
+            if durs:
+                for k in draft:
+                    if k in durs:
+                        draft[k]["thoi_luong"] = f"{float(durs[k]):.1f}s (đọc kịp trong thời gian này)"
+            user2 = glossary_block(terms) + json.dumps(draft, ensure_ascii=False)
+            better = self._ask(self.refine_system, user2, got, jid, "biên tập")
+            got.update({k: v for k, v in better.items() if v.strip()})
+        return got
+
+    def _ask(self, system: str, user: str, items: dict[str, str], jid: str, what: str) -> dict[str, str]:
         last_err = None
         for attempt in range(1, self.settings.max_retries + 1):
             if self.stop.is_set():
@@ -163,13 +215,13 @@ class Translator:
             self.limiter.wait(self.stop)
             prov = self._next_provider()
             self._job(jid, "run", src=getattr(prov, "label", ""),
-                      info=f"đang gửi {len(items)} câu" + (f" (lần {attempt})" if attempt > 1 else ""))
+                      info=f"đang {what} {len(items)} câu" + (f" (lần {attempt})" if attempt > 1 else ""))
             try:
-                reply = prov.chat(self.system, user)
+                reply = prov.chat(system, user)
                 result = parse_json_reply(reply)
                 got = {k: re.sub(r"\s*⟪[^⟫]*⟫\s*", " ", result[k]).strip() for k in items if k in result}
                 if len(got) >= max(1, int(len(items) * 0.5)):
-                    self._job(jid, "done", info=f"nhận {len(got)}/{len(items)} câu")
+                    self._job(jid, "done", info=f"{what} xong {len(got)}/{len(items)} câu")
                     return got  # thiếu vài câu thì để vòng dịch bù xử lý
                 last_err = f"chỉ nhận {len(got)}/{len(items)} câu"
             except ProviderError as e:
@@ -255,7 +307,8 @@ class Translator:
         for rnd, small in enumerate((max(1, bs // 4), 5), 1):
             src = {c.index: c.text for c in targets}
             miss = {str(i): t for i, t in src.items()
-                    if needs_retranslation(t, result.get(i), self.settings.source_lang)}
+                    if needs_retranslation(t, result.get(i), self.settings.source_lang)
+                    or glossary_miss(t, result.get(i), self.settings.glossary)}
             if not miss or self.stop.is_set():
                 break
             self.cb.log(f"Dịch bù vòng {rnd}: {len(miss)} câu sót (batch {small})")
@@ -264,3 +317,56 @@ class Translator:
             got = self._run(miss, small, phase=f"Bù {rnd}")
             result.update({int(k): v for k, v in got.items() if v.strip()})
         return result
+
+
+# ---------------------------------------------------------------- lập bảng thuật ngữ bằng AI
+GLOSSARY_PROMPT = (
+    "Bạn là biên tập viên dịch phim {src} sang {tgt}. Đọc phụ đề gốc dưới đây và liệt kê các THUẬT NGỮ cần dịch "
+    "thống nhất suốt bộ phim: tên nhân vật, danh xưng/xưng hô đặc biệt (sư tôn, sư huynh…), địa danh, môn phái, "
+    "cảnh giới tu luyện, chiêu thức, bảo vật, tổ chức. Với phim cổ trang/tiên hiệp dùng âm Hán Việt cho tên riêng.\n"
+    "Chỉ lấy từ thật sự xuất hiện trong phụ đề, không bịa. Bỏ qua từ thông thường.\n"
+    "Trả về JSON: {{\"terms\": [{{\"src\": \"nguyên văn\", \"vi\": \"cách dịch\", \"loai\": \"nhân vật|địa danh|chiêu thức|…\"}}]}}. "
+    "Không markdown, không giải thích."
+)
+
+
+def extract_glossary(providers, texts: list[str], source_lang: str, target_lang: str = "Tiếng Việt",
+                     log=print, stop: threading.Event | None = None, chunk: int = 400) -> list[dict]:
+    """Gửi phụ đề gốc theo từng phần, gom các thuật ngữ AI đề xuất (bỏ trùng, chỉ giữ từ có trong phụ đề)."""
+    from .providers import ProviderError, RetryableError, strip_thinking
+    providers = providers if isinstance(providers, list) else [providers]
+    system = GLOSSARY_PROMPT.format(src=source_lang, tgt=target_lang)
+    lines = [t.replace("\n", " ").strip() for t in texts if t and t.strip()]
+    found: dict[str, dict] = {}
+    for i in range(0, len(lines), chunk):
+        if stop is not None and stop.is_set():
+            break
+        part = "\n".join(lines[i:i + chunk])
+        last = None
+        for attempt in range(4):
+            prov = providers[(i // chunk + attempt) % len(providers)]
+            try:
+                raw = strip_thinking(prov.chat(system, part))
+                raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.S)
+                obj = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+                for t in obj.get("terms", []):
+                    src, vi = str(t.get("src", "")).strip(), str(t.get("vi", "")).strip()
+                    if src and vi and src in part and src not in found:
+                        found[src] = {"src": src, "vi": vi, "loai": str(t.get("loai", "")).strip()}
+                log(f"  Thuật ngữ: phần {i // chunk + 1}, đã có {len(found)} mục")
+                break
+            except (ProviderError, RetryableError, ValueError, json.JSONDecodeError) as e:
+                last = e
+                time.sleep(min(10, 2 ** attempt))
+        else:
+            log(f"  ⚠ Bỏ qua một phần khi lập thuật ngữ: {last}")
+    # tên dài trước (林澈 trước 林) để khi thay không bị cắt
+    return sorted(found.values(), key=lambda d: -len(d["src"]))
+
+
+def load_glossary(path: str) -> dict[str, str]:
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {d["src"]: d["vi"] for d in data.get("terms", []) if d.get("src") and d.get("vi")}

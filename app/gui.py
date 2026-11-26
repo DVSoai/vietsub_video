@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from . import srt, theme
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .transcribe import MEDIA_EXT, Transcriber, is_media
-from .translator import Settings, Stopped, Translator, needs_retranslation
+from .translator import Settings, Stopped, Translator, load_glossary, needs_retranslation
 
 VERTEX_LOCATIONS = ["global", "us-central1", "asia-southeast1", "asia-northeast1", "asia-east1",
                     "us-east4", "us-west1", "europe-west1", "europe-west4"]
@@ -420,6 +420,15 @@ class MainWindow(QMainWindow):
         v2.addLayout(lrow)
         v2.addLayout(field("Prompt riêng cho phim", prow,
                            "Tên nhân vật, xưng hô, giữ từ Hán Việt… — dòng bắt đầu bằng # là ghi chú"))
+        self.lb_gloss = QLabel("Chọn phụ đề để dùng bảng thuật ngữ của thư mục phim")
+        self.lb_gloss.setObjectName("hint")
+        self.btn_gloss = btn("Bảng thuật ngữ…", "link", "Tên nhân vật, chiêu thức, địa danh… dịch thống nhất cả bộ phim")
+        self.chk_refine = QCheckBox("Dịch kỹ (thêm lượt biên tập)")
+        self.chk_refine.setToolTip("Mỗi batch gửi thêm 1 lần: AI rà lại bản dịch, sửa sai ý/xưng hô/thuật ngữ và viết "
+                                   "lại cho tự nhiên. Tốn gấp đôi lượt gọi.")
+        grow = QHBoxLayout(); grow.setSpacing(8)
+        grow.addWidget(self.lb_gloss, 1); grow.addWidget(self.btn_gloss); grow.addWidget(self.chk_refine)
+        v2.addLayout(field("Thuật ngữ cả bộ phim", grow))
 
         # ===== thẻ 3: Tốc độ
         c3, v3 = card("Tốc độ", "3")
@@ -566,6 +575,7 @@ class MainWindow(QMainWindow):
         self.btn_output.clicked.connect(self._pick_output)
         self.btn_swap.clicked.connect(self._swap_langs)
         self.btn_upload_prompt.clicked.connect(self._upload_prompt)
+        self.btn_gloss.clicked.connect(self._open_gloss)
         self.btn_edit_prompt.clicked.connect(self._edit_prompt)
         self.btn_del_prompt.clicked.connect(self._delete_prompt)
         self.btn_test.clicked.connect(self._test_conn)
@@ -608,6 +618,7 @@ class MainWindow(QMainWindow):
         self.sp_threads.setValue(c.get("threads", 10))
         self.sp_rpm.setValue(c.get("rpm", 0))
         self.sp_batch.setValue(c.get("batch", 40))
+        self.chk_refine.setChecked(c.get("refine", False))
         self.cb_target.setCurrentText(c.get("target", "Tiếng Việt"))
         self.cb_source.setCurrentText(c.get("source", "Tiếng Trung"))
         self._set_detail(bool(c.get("detail", False)), resize=False)
@@ -664,6 +675,7 @@ class MainWindow(QMainWindow):
             threads=self.sp_threads.value(), rpm=self.sp_rpm.value(), batch=self.sp_batch.value(),
             target=self.cb_target.currentText(), source=self.cb_source.currentText(),
             prompt=self.cb_prompt.currentText(), detail=self.detail.isVisible(),
+            refine=self.chk_refine.isChecked(),
         )
         DATA.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -728,6 +740,31 @@ class MainWindow(QMainWindow):
             self.files = files
             self.cfg["last_dir"] = str(Path(files[0]).parent)
             self.drop.set_files(files)
+        self._refresh_gloss()
+
+    # ---------- bảng thuật ngữ (dùng chung theo thư mục phim)
+    def _gloss_path(self) -> str:
+        from .glossary_dialog import glossary_path
+        return glossary_path(str(Path(self.files[0]).parent)) if self.files else ""
+
+    def _refresh_gloss(self):
+        from .glossary_dialog import read_terms
+        p = self._gloss_path()
+        if not p:
+            self.lb_gloss.setText("Chọn phụ đề để dùng bảng thuật ngữ của thư mục phim")
+            return
+        n = len(read_terms(p))
+        self.lb_gloss.setText(f"✔ {n} thuật ngữ — dùng cho cả thư mục" if n else "Chưa có — bấm “Bảng thuật ngữ…”, AI lập giúp")
+
+    def _open_gloss(self):
+        from .glossary_dialog import GlossaryDialog
+        if not self.files:
+            return QMessageBox.information(self, "Chưa chọn phụ đề", "Kéo thả file phụ đề (hoặc video) của bộ phim trước.")
+        srts = [f for f in self.files if f.lower().endswith(".srt")]
+        dlg = GlossaryDialog(self._gloss_path(), srts, self._make_translate_providers,
+                             self.cb_source.currentText(), self.cb_target.currentText(), self)
+        dlg.exec()
+        self._refresh_gloss()
 
     def _pick_output(self):
         d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu", self.ed_output.text())
@@ -917,7 +954,11 @@ class MainWindow(QMainWindow):
             source_lang=self.cb_source.currentText(), target_lang=self.cb_target.currentText(),
             threads=self.sp_threads.value(), batch_size=self.sp_batch.value(),
             rpm=self.sp_rpm.value(), custom_prompt=self._prompt_text(),
+            glossary=load_glossary(self._gloss_path()) if self.files else None,
+            refine=self.chk_refine.isChecked(),
         )
+        if settings.glossary:
+            self._log(f"Bảng thuật ngữ: {len(settings.glossary)} mục")
         names = sorted({p.label.split(" · ")[0] for p in providers})
         self._log(f"Nguồn dịch: {', '.join(names)} — tổng {len(providers)} key")
         self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings,

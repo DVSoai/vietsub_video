@@ -74,7 +74,10 @@ class DubWorker(QThread):
             provs, prov_err = page.providers(), ""
         except Exception as e:  # noqa: BLE001  (chưa cấu hình AI: chỉ lỗi khi thật sự cần)
             provs, prov_err = [], str(e)
+        from .glossary_dialog import glossary_path
+        from .translator import load_glossary
         self.o = {"providers": provs, "prov_err": prov_err, "asr": page.cfg.get("asr", ""),
+                  "glossary": load_glossary(glossary_path(os.path.dirname(page.video))) if page.video else {},
                   "zh_srt": page.find_srt(page.src_code), "audio": page.dub_audio_path(),
                   "video_out": page.dub_video_path(),
                   "remove": page.rb_remove.isChecked(), "retr": page.chk_retr.isChecked(),
@@ -149,7 +152,9 @@ class DubWorker(QThread):
         from .dub import ts_seconds
         durs = {str(c.index): max(0.6, ts_seconds(c.end) - ts_seconds(c.start)) for c in cues}
         st = Settings(source_lang=p.src_lang, target_lang="Tiếng Việt", threads=6, batch_size=25,
-                      custom_prompt=self.o['hints'], dub_durations=durs)
+                      custom_prompt=self.o['hints'], dub_durations=durs, glossary=self.o["glossary"] or None)
+        if st.glossary:
+            self.log.emit(f"  Dùng bảng thuật ngữ: {len(st.glossary)} mục")
         tr = Translator(self._providers(), st, self.stop_event)
         tr.cb.log = self.log.emit
         tr.cb.progress = self.progress.emit
