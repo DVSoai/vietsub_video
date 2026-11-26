@@ -400,6 +400,49 @@ class DubPage(QWidget):
         m = ["none", "blur", "box", "erase"][rp.cb_cover.currentIndex()]
         self.cb_cover.setCurrentIndex({"none": 0, "erase": 1, "blur": 2, "box": 3}[m])
 
+    def _edit_regions(self):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        from .render import EditRegion
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Chỉnh sửa vùng hình ảnh")
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel("Toạ độ % trên video gốc. Chỉ dùng cho nội dung được phép chỉnh sửa."))
+        table = QTableWidget(0, 5)
+        table.setHorizontalHeaderLabels(["X %", "Y %", "Rộng %", "Cao %", "Chế độ"])
+        layout.addWidget(table)
+        def add(region=None):
+            region = region or EditRegion()
+            row = table.rowCount()
+            table.insertRow(row)
+            for col, value in enumerate((region.x_pct, region.y_pct, region.w_pct, region.h_pct)):
+                spin = QDoubleSpinBox()
+                spin.setRange(0 if col < 2 else 1, 100)
+                spin.setValue(value)
+                table.setCellWidget(row, col, spin)
+            combo = QComboBox()
+            for label, mode in (("Làm mờ", "blur"), ("Che đen", "box"), ("Nội suy nền", "erase")):
+                combo.addItem(label, mode)
+            combo.setCurrentIndex(max(0, combo.findData(region.mode)))
+            table.setCellWidget(row, 4, combo)
+        for region in self.edit_regions:
+            add(region)
+        buttons = QHBoxLayout()
+        plus = QPushButton("Thêm vùng")
+        minus = QPushButton("Bỏ vùng đã chọn")
+        plus.clicked.connect(lambda: add())
+        minus.clicked.connect(lambda: table.removeRow(table.currentRow()) if table.currentRow() >= 0 else None)
+        buttons.addWidget(plus); buttons.addWidget(minus)
+        layout.addLayout(buttons)
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.accepted.connect(dlg.accept); actions.rejected.connect(dlg.reject)
+        layout.addWidget(actions)
+        dlg.resize(650, 340)
+        if dlg.exec() == QDialog.Accepted:
+            self.edit_regions = [EditRegion(*(table.cellWidget(row, col).value() for col in range(4)),
+                                            mode=table.cellWidget(row, 4).currentData())
+                                 for row in range(table.rowCount())]
+            self.btn_regions.setText(f"Chỉnh sửa vùng hình ảnh ({len(self.edit_regions)})…")
+
     def visual_settings(self):
         """None = chỉ thay tiếng (nhanh, không nén lại hình). Ngược lại: bộ tham số cho Exporter."""
         from dataclasses import replace
@@ -411,10 +454,11 @@ class DubPage(QWidget):
         base_look = rp._look() if rp is not None else Look()
         color = (base_look.zoom != 100 or base_look.flip or base_look.bright or base_look.contrast != 100
                  or base_look.sat != 100 or base_look.sharpen or bool(base_look.music) or base_look.fade > 0)
-        if cover.mode == "none" and not self.chk_subs.isChecked() and not aspect and not logo and not color:
+        if cover.mode == "none" and not self.chk_subs.isChecked() and not aspect and not logo and not color and not self.edit_regions:
             return None
         look = replace(base_look, speed=self.sp_vspeed.value(), audio_sped=True, aspect=aspect,
-                       logo=logo, logo_pos=self.cb_logo_pos.currentData(), voice_vol=100, denoise=False)
+                       logo=logo, logo_pos=self.cb_logo_pos.currentData(), voice_vol=100, denoise=False,
+                       regions=list(self.edit_regions))
         style = rp._style() if rp is not None else SubStyle()
         opts = rp._opts() if rp is not None else ExportOpts()
         opts = replace(opts, audio_file=self.dub_audio_path(), audio_copy=False)
@@ -528,6 +572,10 @@ class DubPage(QWidget):
         cw.addLayout(_field("Từ trên xuống", self.sp_cy)); cw.addLayout(_field("Cao", self.sp_ch))
         cw.addLayout(_field("Lề 2 bên", self.sp_cx))
         v4.addWidget(self.cover_wrap)
+        self.edit_regions = []
+        self.btn_regions = _btn("Chỉnh sửa vùng hình ảnh…", "ghost")
+        self.btn_regions.clicked.connect(self._edit_regions)
+        v4.addWidget(self.btn_regions)
         v4.addWidget(self.chk_subs)
         lr = QHBoxLayout(); lr.setSpacing(6); lr.addWidget(self.ed_logo, 1); lr.addWidget(self.btn_logo)
         v4.addLayout(_field("Logo kênh của bạn", lr))
@@ -676,6 +724,8 @@ class DubPage(QWidget):
         self.video = path
         self.workdir = workdir_for(path, "")
         self.project = Project.load(path, self.workdir)
+        self.edit_regions = []
+        self.btn_regions.setText("Chỉnh sửa vùng hình ảnh…")
         self.drop.set_files([path])
         self._refresh_files()
         self._fill_tables()
