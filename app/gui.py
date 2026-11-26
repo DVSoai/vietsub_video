@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import srt, theme
-from .secure_store import protect_config, restore_config
+from .secure_store import protect_config, restore_config, restore_config_partial
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .transcribe import MEDIA_EXT, Transcriber, is_media
 from .translator import Settings, Stopped, Translator, load_glossary, needs_retranslation
@@ -646,10 +646,24 @@ class MainWindow(QMainWindow):
             return {}
         try:
             return restore_config(raw)
-        except Exception:
-            QMessageBox.critical(self, "API key", "Không thể giải mã API key trên tài khoản Windows này. File cấu hình được giữ nguyên.")
-            self._config_locked = True
-            return {}
+        except Exception:  # noqa: BLE001
+            cfg, failed = restore_config_partial(raw)
+            ans = QMessageBox.question(
+                self, "Không đọc được API key",
+                "Không giải mã được API key của: " + ", ".join(failed) + ".\n\n"
+                "Thường do file cấu hình được chép từ máy khác hoặc tài khoản Windows khác "
+                "(key chỉ mở được trên đúng tài khoản đã lưu).\n\n"
+                "Xoá các key này và tiếp tục? Mọi cài đặt khác được giữ nguyên, file cũ được sao lưu "
+                "thành settings.json.bak. Sau đó bạn nhập lại key cho các nhà trên.\n\n"
+                "Chọn No: app không lưu gì để giữ nguyên file cấu hình.")
+            if ans != QMessageBox.Yes:
+                self._config_locked = True
+                return {}
+            try:
+                shutil.copy2(CONFIG, CONFIG.with_name("settings.json.bak"))
+            except OSError:
+                pass
+            return cfg
 
     def _apply_cfg(self):
         c = self.cfg

@@ -45,3 +45,23 @@ def restore_config(cfg: dict) -> dict:
                 raise RuntimeError("API keys are protected by Windows DPAPI")
             pc["keys"] = _crypt(base64.b64decode(pc.pop("keys_dpapi"), validate=True), True).decode("utf-8")
     return result
+
+
+def restore_config_partial(cfg: dict) -> tuple[dict, list[str]]:
+    """Giải mã từng nhà; nhà nào không giải mã được (đổi máy / đổi tài khoản Windows) thì bỏ key,
+    giữ nguyên mọi cài đặt khác. Trả về (cấu hình, danh sách nhà bị bỏ key)."""
+    result = copy.deepcopy(cfg)
+    failed = []
+    for name, pc in result.get("per_provider", {}).items():
+        if "keys_dpapi" not in pc:
+            continue
+        blob = pc.pop("keys_dpapi")
+        try:
+            if sys.platform != "win32":
+                raise RuntimeError("API keys are protected by Windows DPAPI")
+            pc["keys"] = _crypt(base64.b64decode(blob, validate=True), True).decode("utf-8")
+        except Exception:  # noqa: BLE001
+            pc["keys"] = ""
+            pc["enabled"] = False
+            failed.append(name)
+    return result, failed

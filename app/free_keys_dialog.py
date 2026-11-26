@@ -42,6 +42,32 @@ def guess_provider(text: str) -> str:
     return ""
 
 
+CHECK_TIMEOUT = 20      # giây: kiểm tra key không được treo lâu
+_ORPHANS: list = []     # lượt kiểm tra còn chạy khi người dùng đã đóng hộp thoại (giữ tham chiếu tới lúc xong)
+
+
+def friendly_error(e: Exception, key: str = "") -> str:
+    """Thông báo lỗi ngắn, dễ hiểu, không bao giờ chứa key."""
+    msg = str(e) or type(e).__name__
+    if key:
+        msg = msg.replace(key, "…")
+    m = re.search(r"HTTP (\d{3})", msg)
+    if m:
+        code = int(m.group(1))
+        why = {400: "yêu cầu không hợp lệ (kiểm tra tên model)", 401: "key không đúng hoặc đã bị thu hồi",
+               403: "key không có quyền dùng model/dịch vụ này", 404: "không tìm thấy model hoặc địa chỉ",
+               429: "hết lượt miễn phí lúc này, thử lại sau"}.get(code)
+        if why is None:
+            why = "máy chủ nhà cung cấp đang lỗi, thử lại sau" if code >= 500 else "bị từ chối"
+        return f"HTTP {code}: {why}"
+    low = msg.lower()
+    if "timed out" in low or "timeout" in low or isinstance(e, requests.Timeout):
+        return f"Không có phản hồi sau {CHECK_TIMEOUT} giây (mạng chậm hoặc nhà cung cấp quá tải)"
+    if "lỗi mạng" in low or isinstance(e, requests.ConnectionError):
+        return "Không kết nối được tới nhà cung cấp (kiểm tra mạng)"
+    return msg[:160]
+
+
 class _Check(QThread):
     done = Signal(str, str, str)       # tên, kết quả, lỗi
 
@@ -52,11 +78,12 @@ class _Check(QThread):
     def run(self):
         try:
             if self.name == "Groq (miễn phí)":
-                response = requests.get("https://api.groq.com/openai/v1/models",
+                base = PROVIDERS[self.name]["base_url"].rstrip("/")
+                response = requests.get(base + "/models",
                                         headers={"Authorization": "Bearer " + self.key},
-                                        timeout=15, allow_redirects=False)
+                                        timeout=CHECK_TIMEOUT, allow_redirects=False)
                 if response.status_code != 200:
-                    self.done.emit(self.name, "", f"Groq HTTP {response.status_code}")
+                    self.done.emit(self.name, "", friendly_error(Exception(f"HTTP {response.status_code}")))
                     return
                 models = {m.get("id") for m in response.json().get("data", [])}
                 if self.model not in models:
@@ -65,10 +92,11 @@ class _Check(QThread):
                 self.done.emit(self.name, "API key và model hợp lệ", "")
                 return
             p = make_provider(self.name, self.key, self.model)
+            p.timeout = CHECK_TIMEOUT
             r = p.chat("Trả lời đúng một từ tiếng Việt.", "Dịch: 你好")
             self.done.emit(self.name, (r or "").strip()[:40] or "OK", "")
         except Exception as e:  # noqa: BLE001
-            self.done.emit(self.name, "", f"Không thể kiểm tra kết nối ({type(e).__name__})")
+            self.done.emit(self.name, "", friendly_error(e, self.key))
 
 
 class FreeKeysDialog(QDialog):
@@ -82,7 +110,8 @@ class FreeKeysDialog(QDialog):
         names = [n for n, p in PROVIDERS.items() if p.get("free")] + list(EXTRA)
 
         top = QLabel("Mỗi nhà chỉ cần làm <b>một lần</b>: bấm <b>Mở trang lấy key</b>, đăng nhập, tạo key rồi bấm "
-                     "<b>Copy</b> trên trang. App tự nhận key trong clipboard, kiểm tra và bật lên. Lúc dịch, app dùng "
+                     "<b>Copy</b> trên trang rồi dán vào ô key (hoặc tích ô bên dưới để app tự nhận khi bạn bấm Copy). "
+                     "App kiểm tra và bật lên. Lúc dịch, app dùng "
                      "tất cả nhà đã có key; nhà nào hết lượt thì tự chuyển sang nhà khác.")
         top.setWordWrap(True); top.setTextFormat(Qt.RichText)
         self.chk_watch = QCheckBox("Tự nhận key khi tôi bấm Copy (theo dõi clipboard lúc hộp thoại đang mở)")
@@ -191,9 +220,11 @@ class FreeKeysDialog(QDialog):
         t = (QGuiApplication.clipboard().text() or "").strip()
         if not t or t == self._clip_last:
             return
-        self._clip_last = t
         name = guess_provider(t)
-        if name and name in self.rows and self.rows[name]["btn"].isEnabled() and t not in self._keys(name):
+        if name and name in self.rows and not self.rows[name]["btn"].isEnabled():
+            return          # nhà này đang kiểm tra key khác: chưa đánh dấu đã xem, lần quét sau nhận lại
+        self._clip_last = t
+        if name and name in self.rows and t not in self._keys(name):
             self.rows[name]["ed"].setText(t)
             self.rows[name]["st"].setText("nhận key từ clipboard, đang kiểm tra…")
             self._check(name)
@@ -242,8 +273,16 @@ class FreeKeysDialog(QDialog):
         row["st"].setText(f"✔ đang dùng — {result}")
 
     def done(self, r):
-        if any(j.isRunning() for j in self._jobs):
-            QMessageBox.information(self, "Đang kiểm tra", "Vui lòng chờ kiểm tra kết nối hoàn tất.")
-            return
+        # Đóng ngay cả khi còn đang kiểm tra: bỏ kết quả về sau (key đó không được lưu/bật).
+        for j in self._jobs:
+            if j.isRunning():
+                try:
+                    j.done.disconnect(self._checked)
+                except (RuntimeError, TypeError):
+                    pass
+                j.setParent(None)
+                _ORPHANS.append(j)
+                j.finished.connect(lambda j=j: _ORPHANS.remove(j) if j in _ORPHANS else None)
+        self._jobs = []
         self._clip_timer.stop()
         super().done(r)

@@ -165,6 +165,7 @@ class Provider:
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
         self.session = requests.Session()
+        self.timeout = TIMEOUT          # giây chờ mỗi request (hộp thoại kiểm tra key đặt ngắn hơn)
         self.label = self.model
         # giới hạn riêng của key này (gói miễn phí): giãn cách request + số request chạy cùng lúc
         self.min_interval = 0.0
@@ -194,13 +195,13 @@ class Provider:
 
     def _post(self, url, **kw):
         try:
-            return self.session.post(url, timeout=TIMEOUT, **kw)
+            return self.session.post(url, timeout=self.timeout, **kw)
         except requests.RequestException as e:
             raise RetryableError(f"Lỗi mạng: {e}") from e
 
     def _get(self, url, **kw):
         try:
-            return self.session.get(url, timeout=60, **kw)
+            return self.session.get(url, timeout=min(60, self.timeout), **kw)
         except requests.RequestException as e:
             raise ProviderError(f"Lỗi mạng: {e}") from e
 
