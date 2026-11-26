@@ -26,9 +26,12 @@ jobs:
       - name: Mo/dong app binh thuong
         shell: cmd
         run: |
-          python tests/win_close_check.py . dialog
-          if errorlevel 1 exit /b 1
-          echo mo_dong_app=%ERRORLEVEL%
+          for /L %%i in (1,1,6) do (
+            python tests/win_close_check.py . dialog
+            call echo mo_dong_app lan %%i = %%ERRORLEVEL%%
+            if not errorlevel 0 exit /b 1
+            if errorlevel 1 exit /b 1
+          )
       - name: test_ai_connect (DPAPI that tren Windows)
         if: always()
         run: python tests/run_check.py tests/test_ai_connect.py

@@ -22,4 +22,5 @@ def step():
 QTimer.singleShot(500, step)
 r = a.exec()
 print("exec tra ve", r, flush=True)
+g.teardown(a, w); del w      # đúng như app.gui.main()
 sys.exit(r)

@@ -1354,4 +1354,18 @@ def main():
     w = MainWindow()
     w.show()
     _dark_title_bar(w)
-    sys.exit(app.exec())
+    code = app.exec()
+    teardown(app, w)
+    sys.exit(code)
+
+
+def teardown(app, w):
+    """Giải phóng cửa sổ rồi Qt trước khi Python thoát. Để Python tự dọn thì trên Windows tiến trình
+    thỉnh thoảng lỗi lúc thoát (0xC0000409) dù đã lưu xong — đo trên GitHub Actions: 3/6 lần lỗi, sau khi sửa 0/6."""
+    try:
+        w.deleteLater()
+        app.processEvents()
+        if hasattr(app, "shutdown"):
+            app.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
