@@ -125,7 +125,10 @@ try:
     err = ""
 except bl.BiliError as e:
     err = str(e)
-rec("B3", "Mục bị Bilibili từ chối: báo lỗi rõ", "mã -400" in err, err)
+fb = b.browse("rank", 2005, 1)
+rec("B3", "Mục không có bảng xếp hạng (Bilibili trả -400): tự chuyển sang Đề xuất, ghi rõ lý do",
+    "mã -400" in err and len(fb.videos) == 15 and fb.videos[0].bvid.startswith("BV1C2005") and "không có bảng xếp hạng" in fb.note,
+    f"gọi trực tiếp: '{err}'; qua browse: {len(fb.videos)} video đề xuất, ghi chú='{fb.note}'")
 
 # ------------------------------------------------------------ giao diện
 dd = OUT / "browse_cfg"

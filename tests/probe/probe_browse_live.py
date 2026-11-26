@@ -9,7 +9,7 @@ def rec(name, fn):
     try:
         r = fn(); ok = len(r.videos) > 0 and all(v.bvid and v.title and v.cover.startswith("https://") for v in r.videos)
         print(f"[{'PASS' if ok else 'FAIL'}] {name}: {len(r.videos)} video, {r.num_pages} trang · "
-              f"{' | '.join(v.title[:14] for v in r.videos[:3])}", flush=True)
+              f"{' | '.join(v.title[:14] for v in r.videos[:3])}" + (f" · GHI CHÚ: {r.note}" if r.note else ""), flush=True)
     except Exception as e:  # noqa: BLE001
         ok = False; print(f"[FAIL] {name}: {e}", flush=True)
     res.append(ok); time.sleep(0.5)
@@ -17,7 +17,7 @@ def rec(name, fn):
 rec("Thịnh hành trang 1", lambda: b.popular(1))
 rec("Thịnh hành trang 2", lambda: b.popular(2))
 for cat, rid in BROWSE_CATS.items():
-    rec(f"Xếp hạng · {cat} ({rid})", lambda rid=rid: b.ranking(rid, 1))
+    rec(f"Xếp hạng · {cat} ({rid})", lambda rid=rid: b.browse("rank", rid, 1))
 for cat, rid in BROWSE_CATS.items():
     if rid:
         rec(f"Đề xuất · {cat} ({rid})", lambda rid=rid: b.region_rcmd(rid, 1))

@@ -94,6 +94,7 @@ class SearchResult:
     page: int
     num_pages: int
     total: int
+    note: str = ""        # ghi chú cho người dùng (vd. mục không có bảng xếp hạng nên hiện Đề xuất)
 
 
 def fmt_duration(sec) -> str:
@@ -278,7 +279,14 @@ class Bili:
         if mode == "popular":
             return self.popular(page)
         if mode == "rank":
-            return self.ranking(rid, page)
+            try:
+                return self.ranking(rid, page)
+            except BiliError as e:
+                if "-400" not in str(e) or not rid:
+                    raise
+                r = self.region_rcmd(rid, page)     # vd. 资讯 (1009): Bilibili không có bảng xếp hạng
+                r.note = "mục này không có bảng xếp hạng, đang hiện Đề xuất"
+                return r
         return self.region_rcmd(rid, page)
 
     # ---------------------------------------------------------- danh sách tập

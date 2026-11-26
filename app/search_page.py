@@ -500,8 +500,9 @@ class SearchPage(QWidget):
             _, mode, rid = self.source
             name = {v: k for k, v in BROWSE_MODES.items()}[mode].split(" ", 1)[1]
             cat = "" if mode == "popular" else " · " + {v: k for k, v in BROWSE_CATS.items()}.get(rid, str(rid))
-            extra = f" · {res.total} video" if mode == "rank" else ""
-            return f"{name}{cat}{extra}"
+            extra = f" · {res.total} video" if mode == "rank" and not res.note else ""
+            note = f" ({res.note})" if res.note else ""
+            return f"{name}{cat}{extra}{note}"
         return f"“{self.keyword}” · khoảng {res.total:,} video".replace(",", ".")
 
     def showEvent(self, e):
