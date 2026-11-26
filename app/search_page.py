@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
+    QSizePolicy,
     QCheckBox, QComboBox, QDialog, QMenu, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from .sources import SITES, extract, search_url
 from .bilibili import (
-    DURATIONS, ORDERS, QUALITIES, Bili, BiliError, DownloadJob, Downloader, Part, Video, fmt_count,
+    BROWSE_CATS, BROWSE_MODES, DURATIONS, ORDERS, QUALITIES, Bili, BiliError, DownloadJob, Downloader, Part, Video, fmt_count,
 )
 
 QUICK = ["仙侠短剧", "修仙", "古装剧", "玄幻", "穿越", "短剧合集", "武侠"]
@@ -268,6 +269,9 @@ class SearchPage(QWidget):
         self.page = 1
         self.num_pages = 1
         self.keyword = ""
+        self.source: tuple = ()          # ("search", từ khóa) hoặc ("browse", kiểu, mã mục)
+        self._auto_browsed = False
+        self._browse_again: int | None = None
         self._search_job: _Job | None = None
         self._tr_job: _Job | None = None
         self._img_pool = ThreadPoolExecutor(max_workers=6)
@@ -287,6 +291,11 @@ class SearchPage(QWidget):
         self.cb_cookie.setCurrentText(st.get("cookie", "Không dùng"))
         if st.get("site") in SITES:
             self.cb_site.setCurrentText(st["site"])
+        if st.get("browse_mode") in BROWSE_MODES:
+            self.cb_bmode.setCurrentText(st["browse_mode"])
+        if st.get("browse_cat") in BROWSE_CATS:
+            self.cb_bcat.setCurrentText(st["browse_cat"])
+        self._on_bmode()
         if self.cb_quality.currentIndex() < 0:
             self.cb_quality.setCurrentIndex(0)
 
@@ -317,17 +326,30 @@ class SearchPage(QWidget):
         self.ed_link.setPlaceholderText("Dán link hoặc cả đoạn chữ chia sẻ: Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun…")
         self.btn_link = _btn("⬇  Tải link này", "ghost")
         r0 = QHBoxLayout(); r0.setSpacing(8); r0.addWidget(self.ed_link, 1); r0.addWidget(self.btn_link)
-        tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r0)
+        self.cb_bmode = QComboBox(); self.cb_bmode.addItems(BROWSE_MODES)
+        self.cb_bmode.setToolTip("Thịnh hành: video hot toàn Bilibili hôm nay\n"
+                                 "Bảng xếp hạng: top 100 trong 3 ngày của mục đã chọn\n"
+                                 "Đề xuất trong mục: mỗi lần bấm Trang sau là một loạt video mới")
+        self.cb_bcat = QComboBox(); self.cb_bcat.addItems(BROWSE_CATS); self.cb_bcat.setMaxVisibleItems(20)
+        self.cb_bcat.setToolTip("Mục (phân khu) của Bilibili")
+        self.btn_browse = _btn("📂  Xem", "ghost", "Xem danh sách video theo mục, không cần gõ từ khóa")
+        self.lb_browse = QLabel("Duyệt không cần gõ:"); self.lb_browse.setObjectName("hint")
+        r3 = QHBoxLayout(); r3.setSpacing(8)
+        r3.addWidget(self.lb_browse); r3.addWidget(self.cb_bmode); r3.addWidget(self.cb_bcat, 1)
+        r3.addWidget(self.btn_browse); r3.addStretch(1)
+        tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r3); tv.addLayout(r0)
 
         # ---- kết quả
         res, rv = _card("Kết quả", None)
         self.lb_count = QLabel(""); self.lb_count.setObjectName("hint")
-        rv.itemAt(0).layout().addWidget(self.lb_count)
+        self.lb_count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lb_count.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)   # nhãn dài không bị cắt
+        rv.itemAt(0).layout().addWidget(self.lb_count, 1)
         self.grid_host = QWidget(); self.grid_host.setObjectName("gridHost")
         self.grid = QGridLayout(self.grid_host); self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(14); self.grid.setVerticalSpacing(14)
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.empty = QLabel("Nhập từ khóa rồi bấm Tìm, hoặc bấm một gợi ý ở trên.")
+        self.empty = QLabel("Nhập từ khóa rồi bấm Tìm, bấm một gợi ý, hoặc chọn mục ở hàng “Duyệt không cần gõ”.")
         self.empty.setObjectName("muted"); self.empty.setAlignment(Qt.AlignCenter)
         self.grid.addWidget(self.empty, 0, 0)
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.grid_host)
@@ -381,20 +403,25 @@ class SearchPage(QWidget):
         self.btn_link.clicked.connect(self._from_link)
         self.cb_site.currentTextChanged.connect(self._on_site)
         self.ed_link.returnPressed.connect(self._from_link)
-        self.btn_prev.clicked.connect(lambda: self._search(self.page - 1))
-        self.btn_next.clicked.connect(lambda: self._search(self.page + 1))
+        self.btn_prev.clicked.connect(lambda: self._goto(self.page - 1))
+        self.btn_next.clicked.connect(lambda: self._goto(self.page + 1))
+        self.btn_browse.clicked.connect(lambda: self._browse(1))
+        self.cb_bmode.currentTextChanged.connect(self._on_bmode)
+        self.cb_bcat.currentIndexChanged.connect(lambda _=0: self.source[:1] == ("browse",) and self._browse(1))
         self.btn_out.clicked.connect(self._pick_out)
         b1.clicked.connect(self._open_out)
         b2.clicked.connect(self.dthread.stop_all)
         b3.clicked.connect(self._clear_done)
         for w in (self.cb_order, self.cb_dur):
-            w.currentIndexChanged.connect(lambda _=0: self.keyword and self._search(1))
+            w.currentIndexChanged.connect(lambda _=0: self.source[:1] == ("search",) and self._search(1))
         self._update_pager()
 
     # ------------------------------------------------------------ nguồn
     def _on_site(self, site: str):
         inapp = SITES[site]["search"] is None
         self.cb_order.setEnabled(inapp); self.cb_dur.setEnabled(inapp)
+        for w in (self.lb_browse, self.cb_bmode, self.cb_bcat, self.btn_browse):
+            w.setVisible(inapp)                     # duyệt theo mục chỉ có ở Bilibili
         self.btn_go.setText("🔍  Tìm" if inapp else "🌐  Mở trang tìm")
         if inapp:
             self.ed_q.setPlaceholderText("Nhập từ khóa tiếng Trung (vd: 仙侠短剧) — hoặc gõ tiếng Việt rồi bấm VI→中")
@@ -403,7 +430,7 @@ class SearchPage(QWidget):
             note = SITES[site].get("note", "")
             self.lb_count.setText(note)
         if not self.cards:
-            self.empty.setText("Nhập từ khóa rồi bấm Tìm, hoặc bấm một gợi ý ở trên." if inapp else
+            self.empty.setText("Nhập từ khóa rồi bấm Tìm, bấm một gợi ý, hoặc chọn mục ở hàng “Duyệt không cần gõ”." if inapp else
                                f"Với {site}: gõ từ khóa → bấm “Mở trang tìm” → chọn phim trên trình duyệt → "
                                "chép link (hoặc cả đoạn chữ chia sẻ) → dán vào ô “Dán link…” ở trên.")
             self.empty.setWordWrap(True)
@@ -427,8 +454,9 @@ class SearchPage(QWidget):
             return
         if self._search_job and self._search_job.isRunning():
             return
-        page = max(1, min(page, self.num_pages if kw == self.keyword else 50))
+        page = max(1, min(page, self.num_pages if self.source == ("search", kw) else 50))
         self.keyword = kw
+        self.source = ("search", kw)
         order = ORDERS[self.cb_order.currentText()]
         dur = DURATIONS[self.cb_dur.currentText()]
         self.lb_count.setText("đang tìm…")
@@ -437,8 +465,60 @@ class SearchPage(QWidget):
         self._search_job.result.connect(self._on_results)
         self._search_job.start()
 
+    def _goto(self, page: int):
+        if self.source[:1] == ("browse",):
+            self._browse(page)
+        elif self.source[:1] == ("search",):
+            self._search(page)
+
+    def _on_bmode(self, _text=""):
+        mode = BROWSE_MODES[self.cb_bmode.currentText()]
+        self.cb_bcat.setEnabled(mode != "popular")
+        if self.source[:1] == ("browse",):
+            self._browse(1)
+
+    def _browse(self, page: int):
+        """Duyệt Bilibili theo mục, không cần từ khóa."""
+        if self._search_job and self._search_job.isRunning():
+            self._browse_again = page          # đang tải: chạy lại theo lựa chọn mới nhất khi xong
+            return
+        mode = BROWSE_MODES[self.cb_bmode.currentText()]
+        rid = BROWSE_CATS[self.cb_bcat.currentText()] if mode != "popular" else 0
+        src = ("browse", mode, rid)
+        page = max(1, min(page, self.num_pages if self.source == src else 1))
+        self.source = src
+        self.keyword = ""
+        self.lb_count.setText("đang tải danh sách…")
+        self.btn_go.setEnabled(False); self.btn_browse.setEnabled(False)
+        self._search_job = _Job(lambda: self.bili.browse(mode, rid, page))
+        self._search_job.result.connect(self._on_results)
+        self._search_job.start()
+        self._store()
+
+    def _source_label(self, res) -> str:
+        if self.source[:1] == ("browse",):
+            _, mode, rid = self.source
+            name = {v: k for k, v in BROWSE_MODES.items()}[mode].split(" ", 1)[1]
+            cat = "" if mode == "popular" else " · " + {v: k for k, v in BROWSE_CATS.items()}.get(rid, str(rid))
+            extra = f" · {res.total} video" if mode == "rank" and not res.note else ""
+            note = f" ({res.note})" if res.note else ""
+            return f"{name}{cat}{extra}{note}"
+        return f"“{self.keyword}” · khoảng {res.total:,} video".replace(",", ".")
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Mở tab lần đầu mà chưa có kết quả: tự hiện danh sách đang chọn (mặc định Thịnh hành) để chọn ngay
+        if not self._auto_browsed and not self.cards and SITES[self.cb_site.currentText()]["search"] is None \
+                and self.cfg.get("search", {}).get("auto_browse", True):
+            self._auto_browsed = True
+            QTimer.singleShot(300, lambda: self.source or self._browse(1))
+
     def _on_results(self, res, err):
-        self.btn_go.setEnabled(True)
+        self.btn_go.setEnabled(True); self.btn_browse.setEnabled(True)
+        if self._browse_again is not None:     # người dùng đã đổi lựa chọn trong lúc tải: bỏ kết quả cũ, tải lại
+            again, self._browse_again = self._browse_again, None
+            QTimer.singleShot(0, lambda: self._browse(again))
+            return
         if err:
             self.lb_count.setText("")
             self._show_empty(f"✖ {err}")
@@ -452,9 +532,10 @@ class SearchPage(QWidget):
         self.cards = [VideoCard(v) for v in res.videos]
         for c in self.cards:
             c.download.connect(self._ask_download)
-        self.lb_count.setText(f"“{self.keyword}” · khoảng {res.total:,} video".replace(",", "."))
+        self.lb_count.setText(self._source_label(res))
         if not self.cards:
-            self._show_empty("Không tìm thấy video nào. Thử từ khóa khác.")
+            self._show_empty("Không tìm thấy video nào. Thử từ khóa khác." if self.source[:1] == ("search",)
+                             else "Mục này hiện chưa có video. Thử mục khác.")
         else:
             self.empty.hide()
             self._relayout()
@@ -501,8 +582,8 @@ class SearchPage(QWidget):
 
     def _update_pager(self):
         self.lb_page.setText(f"Trang {self.page} / {self.num_pages}")
-        self.btn_prev.setEnabled(self.page > 1 and bool(self.keyword))
-        self.btn_next.setEnabled(self.page < self.num_pages and bool(self.keyword))
+        self.btn_prev.setEnabled(self.page > 1 and bool(self.source))
+        self.btn_next.setEnabled(self.page < self.num_pages and bool(self.source))
 
     # ------------------------------------------------------------ dịch
     def _translate_titles(self, gen):
@@ -715,7 +796,9 @@ class SearchPage(QWidget):
     def _store(self):
         self.cfg["search"] = {"out_dir": self.ed_out.text().strip(), "quality": self.cb_quality.currentText(),
                               "translate_titles": self.chk_tr.isChecked(), "cover": self.chk_cover.isChecked(),
-                              "site": self.cb_site.currentText(), "cookie": self.cb_cookie.currentText()}
+                              "site": self.cb_site.currentText(), "cookie": self.cb_cookie.currentText(),
+                              "browse_mode": self.cb_bmode.currentText(), "browse_cat": self.cb_bcat.currentText(),
+                              "auto_browse": self.cfg.get("search", {}).get("auto_browse", True)}
 
     def store_state(self):
         self._store()

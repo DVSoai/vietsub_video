@@ -48,6 +48,9 @@ jobs:
       - name: test_retired_models (model bị nhà cung cấp tắt)
         if: always()
         run: python tests/run_check.py tests/test_retired_models.py
+      - name: test_bilibili_browse (duyệt theo mục, máy chủ giả lập)
+        if: always()
+        run: python tests/run_check.py tests/test_bilibili_browse.py
       - name: test_free_keys_dialog
         if: always()
         run: python tests/run_check.py tests/test_free_keys_dialog.py

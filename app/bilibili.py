@@ -26,6 +26,32 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like
 
 ORDERS = {"Liên quan nhất": "totalrank", "Xem nhiều nhất": "click", "Mới đăng": "pubdate",
           "Nhiều bình luận chạy": "dm", "Nhiều lượt lưu": "stow"}
+# Duyệt không cần từ khóa (đã gọi thử thật 26/11/2026: popular, ranking/v2 với mã mục mới, region/feed/rcmd đều chạy;
+# dynamic/region và newlist không còn trả video). Mã mục là tid_v2 (hệ phân mục mới của Bilibili).
+BROWSE_MODES = {"🔥 Thịnh hành hôm nay": "popular", "🏆 Bảng xếp hạng": "rank", "✨ Đề xuất trong mục": "rcmd"}
+BROWSE_CATS = {
+    "Toàn trang": 0,
+    "Phim ảnh · review, cắt phim (影视)": 1001,
+    "Tiểu kịch trường · phim ngắn tự diễn (小剧场)": 1021,
+    "Hoạt hình (动画)": 1005,
+    "Giải trí · sao, show (娱乐)": 1002,
+    "Hài · chế (鬼畜)": 1007,
+    "Âm nhạc (音乐)": 1003,
+    "Nhảy (舞蹈)": 1004,
+    "Game (游戏)": 1008,
+    "Kiến thức (知识)": 1010,
+    "Công nghệ (科技数码)": 1012,
+    "Tin tức (资讯)": 1009,
+    "Ẩm thực (美食)": 1020,
+    "Động vật (动物)": 1024,
+    "Thể thao (体育运动)": 1018,
+    "Ô tô (汽车)": 1013,
+    "Thời trang · làm đẹp (时尚美妆)": 1014,
+    "Du lịch (出行)": 1022,
+    "Vlog": 1029,
+}
+BROWSE_PAGE = 20
+
 DURATIONS = {"Mọi thời lượng": 0, "Dưới 10 phút": 1, "10–30 phút": 2, "30–60 phút": 3, "Trên 60 phút": 4}
 
 _MIXIN = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
@@ -68,6 +94,37 @@ class SearchResult:
     page: int
     num_pages: int
     total: int
+    note: str = ""        # ghi chú cho người dùng (vd. mục không có bảng xếp hạng nên hiện Đề xuất)
+
+
+def fmt_duration(sec) -> str:
+    try:
+        sec = int(sec)
+    except (TypeError, ValueError):
+        return str(sec or "")
+    h, m, x = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"{h}:{m:02d}:{x:02d}" if h else f"{m}:{x:02d}"
+
+
+def video_from_item(it: dict) -> "Video | None":
+    """Một mục trong danh sách thịnh hành / xếp hạng / đề xuất -> Video (bỏ qua mục không phải video thường)."""
+    bvid = it.get("bvid")
+    if not bvid or it.get("goto") not in (None, "av"):
+        return None
+    pic = it.get("pic") or it.get("cover") or ""
+    if pic.startswith("//"):
+        pic = "https:" + pic
+    elif pic.startswith("http://"):
+        pic = "https://" + pic[7:]
+    owner = it.get("owner") or {}
+    author = owner.get("name") if isinstance(owner, dict) else ""
+    if not author:
+        a = it.get("author")
+        author = a.get("name", "") if isinstance(a, dict) else (a or "")
+    stat = it.get("stat") or {}
+    return Video(bvid=bvid, title=clean_title(it.get("title")), author=author or "", cover=pic,
+                 duration=fmt_duration(it.get("duration")), play=int(stat.get("view") or stat.get("play") or 0),
+                 pubdate=int(it.get("pubdate") or 0), desc=clean_title(it.get("desc") or ""))
 
 
 def clean_title(t: str) -> str:
@@ -168,6 +225,69 @@ class Bili:
                 pubdate=int(it.get("pubdate") or 0), desc=clean_title(it.get("description") or "")))
         return SearchResult(vids, int(d.get("page") or page), int(d.get("numPages") or 1),
                             int(d.get("numResults") or len(vids)))
+
+    # ---------------------------------------------------------- duyệt không cần từ khóa
+    def _ok(self, data: dict, what: str) -> dict:
+        if data.get("code") != 0:
+            raise BiliError(f"Bilibili từ chối {what} (mã {data.get('code')}: {data.get('message')})")
+        return data.get("data") or {}
+
+    @staticmethod
+    def _videos(items) -> list:
+        out, seen = [], set()
+        for it in items or []:
+            v = video_from_item(it) if isinstance(it, dict) else None
+            if v and v.bvid not in seen:
+                seen.add(v.bvid); out.append(v)
+        return out
+
+    def popular(self, page: int = 1) -> SearchResult:
+        """Thịnh hành hôm nay (热门), 20 video mỗi trang."""
+        d = self._ok(self._get("/x/web-interface/popular", {"pn": page, "ps": BROWSE_PAGE}), "trang thịnh hành")
+        vids = self._videos(d.get("list"))
+        more = not d.get("no_more") and bool(vids)
+        return SearchResult(vids, page, page + 1 if more else page, len(vids))
+
+    def ranking(self, rid: int = 0, page: int = 1) -> SearchResult:
+        """Bảng xếp hạng 3 ngày của một mục (tối đa 100 video, chia 20 video mỗi trang)."""
+        key = ("rank", rid)
+        cache = getattr(self, "_rank_cache", {})
+        self._rank_cache = cache
+        hit = cache.get(key)
+        if not hit or time.time() - hit[0] > 600:
+            params = {"rid": rid, "type": "all"}
+            data = self._get("/x/web-interface/ranking/v2", params)
+            if data.get("code") in (-412, -352, -403):
+                data = self._get("/x/web-interface/ranking/v2", self._sign(dict(params, web_location="333.934")))
+            hit = (time.time(), self._videos(self._ok(data, "bảng xếp hạng").get("list")))
+            cache[key] = hit
+        allv = hit[1]
+        pages = max(1, (len(allv) + BROWSE_PAGE - 1) // BROWSE_PAGE)
+        page = max(1, min(page, pages))
+        return SearchResult(allv[(page - 1) * BROWSE_PAGE: page * BROWSE_PAGE], page, pages, len(allv))
+
+    def region_rcmd(self, rid: int, page: int = 1) -> SearchResult:
+        """Đề xuất trong một mục: mỗi lần gọi một loạt video mới (trang sau = loạt kế tiếp)."""
+        if not rid:
+            return self.popular(page)
+        params = {"display_id": page, "request_cnt": BROWSE_PAGE, "from_region": rid, "device": "web", "plat": 30}
+        d = self._ok(self._get("/x/web-interface/region/feed/rcmd", params), "đề xuất theo mục")
+        vids = self._videos(d.get("archives") or d.get("item") or d.get("list"))
+        return SearchResult(vids, page, min(page + 1, 30) if vids else page, len(vids))
+
+    def browse(self, mode: str, rid: int = 0, page: int = 1) -> SearchResult:
+        if mode == "popular":
+            return self.popular(page)
+        if mode == "rank":
+            try:
+                return self.ranking(rid, page)
+            except BiliError as e:
+                if "-400" not in str(e) or not rid:
+                    raise
+                r = self.region_rcmd(rid, page)     # vd. 资讯 (1009): Bilibili không có bảng xếp hạng
+                r.note = "mục này không có bảng xếp hạng, đang hiện Đề xuất"
+                return r
+        return self.region_rcmd(rid, page)
 
     # ---------------------------------------------------------- danh sách tập
     def parts(self, bvid: str) -> tuple[str, list[Part]]:
