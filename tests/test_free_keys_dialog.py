@@ -85,6 +85,11 @@ def pump(sec, until=None):
 def drive():
     dlg = [x for x in app.topLevelWidgets() if isinstance(x, FreeKeysDialog) and x.isVisible()][0]
     groq = "gsk_" + "Q" * 40
+    res["default_off"] = not dlg.chk_watch.isChecked()
+    QGuiApplication.clipboard().setText("gsk_" + "Z" * 40)      # chưa tích ô -> không được đọc clipboard
+    pump(2)
+    res["ignored"] = dlg.rows["Groq (miễn phí)"]["ed"].text() == ""
+    dlg.chk_watch.setChecked(True)                              # người dùng tự bật
     QGuiApplication.clipboard().setText(groq)                   # như bấm Copy trên trang Groq
     res["auto"] = pump(8, lambda: dlg.rows["Groq (miễn phí)"]["st"].text().startswith("✔"))
     dlg.rows["NVIDIA NIM (miễn phí)"]["ed"].setText("nvapi-bad" + "x" * 30)   # key sai
@@ -102,7 +107,10 @@ from PySide6.QtCore import QTimer  # noqa: E402
 QTimer.singleShot(500, drive)
 w.open_free_keys()
 pp = w.cfg.get("per_provider", {})
-rec("K2", "Bấm Copy key Groq trên trang -> app tự nhận, kiểm tra, bật", res.get("auto")
+rec("K2a", "Mặc định KHÔNG đọc clipboard; chưa tích ô thì bỏ qua key vừa copy",
+    res.get("default_off") and res.get("ignored") and "gsk_ZZZZ" not in pp.get("Groq (miễn phí)", {}).get("keys", ""),
+    f"ô tắt sẵn={res.get('default_off')}, ô key Groq vẫn trống={res.get('ignored')}")
+rec("K2", "Tích ô rồi bấm Copy key Groq trên trang -> app tự nhận, kiểm tra, bật", res.get("auto")
     and pp.get("Groq (miễn phí)", {}).get("enabled") and "gsk_" in pp.get("Groq (miễn phí)", {}).get("keys", ""),
     f"Groq={pp.get('Groq (miễn phí)')}")
 rec("K3", "Key sai báo lỗi rõ, không bật", res.get("bad", "").startswith("✖") and "nvapi-bad" not in
