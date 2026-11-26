@@ -7,12 +7,13 @@ cung cấp theo tiền tố key, thử gọi 1 lần, lưu và bật lên. Model
 from __future__ import annotations
 
 import re
+import requests
 
 from PySide6.QtCore import QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QScrollArea, QVBoxLayout, QWidget, QMessageBox,
 )
 
 from .providers import PROVIDERS, make_provider
@@ -41,6 +42,32 @@ def guess_provider(text: str) -> str:
     return ""
 
 
+CHECK_TIMEOUT = 20      # giây: kiểm tra key không được treo lâu
+_ORPHANS: list = []     # lượt kiểm tra còn chạy khi người dùng đã đóng hộp thoại (giữ tham chiếu tới lúc xong)
+
+
+def friendly_error(e: Exception, key: str = "") -> str:
+    """Thông báo lỗi ngắn, dễ hiểu, không bao giờ chứa key."""
+    msg = str(e) or type(e).__name__
+    if key:
+        msg = msg.replace(key, "…")
+    m = re.search(r"HTTP (\d{3})", msg)
+    if m:
+        code = int(m.group(1))
+        why = {400: "yêu cầu không hợp lệ (kiểm tra tên model)", 401: "key không đúng hoặc đã bị thu hồi",
+               403: "key không có quyền dùng model/dịch vụ này", 404: "không tìm thấy model hoặc địa chỉ",
+               429: "hết lượt miễn phí lúc này, thử lại sau"}.get(code)
+        if why is None:
+            why = "máy chủ nhà cung cấp đang lỗi, thử lại sau" if code >= 500 else "bị từ chối"
+        return f"HTTP {code}: {why}"
+    low = msg.lower()
+    if "timed out" in low or "timeout" in low or isinstance(e, requests.Timeout):
+        return f"Không có phản hồi sau {CHECK_TIMEOUT} giây (mạng chậm hoặc nhà cung cấp quá tải)"
+    if "lỗi mạng" in low or isinstance(e, requests.ConnectionError):
+        return "Không kết nối được tới nhà cung cấp (kiểm tra mạng)"
+    return msg[:160]
+
+
 class _Check(QThread):
     done = Signal(str, str, str)       # tên, kết quả, lỗi
 
@@ -50,11 +77,26 @@ class _Check(QThread):
 
     def run(self):
         try:
+            if self.name == "Groq (miễn phí)":
+                base = PROVIDERS[self.name]["base_url"].rstrip("/")
+                response = requests.get(base + "/models",
+                                        headers={"Authorization": "Bearer " + self.key},
+                                        timeout=CHECK_TIMEOUT, allow_redirects=False)
+                if response.status_code != 200:
+                    self.done.emit(self.name, "", friendly_error(Exception(f"HTTP {response.status_code}")))
+                    return
+                models = {m.get("id") for m in response.json().get("data", [])}
+                if self.model not in models:
+                    self.done.emit(self.name, "", "Model đã chọn không có trong danh sách Groq")
+                    return
+                self.done.emit(self.name, "API key và model hợp lệ", "")
+                return
             p = make_provider(self.name, self.key, self.model)
+            p.timeout = CHECK_TIMEOUT
             r = p.chat("Trả lời đúng một từ tiếng Việt.", "Dịch: 你好")
             self.done.emit(self.name, (r or "").strip()[:40] or "OK", "")
         except Exception as e:  # noqa: BLE001
-            self.done.emit(self.name, "", str(e)[:200])
+            self.done.emit(self.name, "", friendly_error(e, self.key))
 
 
 class FreeKeysDialog(QDialog):
@@ -68,11 +110,12 @@ class FreeKeysDialog(QDialog):
         names = [n for n, p in PROVIDERS.items() if p.get("free")] + list(EXTRA)
 
         top = QLabel("Mỗi nhà chỉ cần làm <b>một lần</b>: bấm <b>Mở trang lấy key</b>, đăng nhập, tạo key rồi bấm "
-                     "<b>Copy</b> trên trang. App tự nhận key trong clipboard, kiểm tra và bật lên. Lúc dịch, app dùng "
+                     "<b>Copy</b> trên trang rồi dán vào ô key (hoặc tích ô bên dưới để app tự nhận khi bạn bấm Copy). "
+                     "App kiểm tra và bật lên. Lúc dịch, app dùng "
                      "tất cả nhà đã có key; nhà nào hết lượt thì tự chuyển sang nhà khác.")
         top.setWordWrap(True); top.setTextFormat(Qt.RichText)
         self.chk_watch = QCheckBox("Tự nhận key khi tôi bấm Copy (theo dõi clipboard lúc hộp thoại đang mở)")
-        self.chk_watch.setChecked(True)
+        self.chk_watch.setChecked(False)
 
         grid_w = QWidget(); grid = QGridLayout(grid_w); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(8)
         for r, name in enumerate(names):
@@ -87,7 +130,7 @@ class FreeKeysDialog(QDialog):
             b_open = QPushButton("Mở trang lấy key"); b_open.setObjectName("ghost")
             b_check = QPushButton("Kiểm tra && bật"); b_check.setObjectName("ghost")
             st = QLabel(self._status_text(name)); st.setObjectName("hint"); st.setMinimumWidth(170); st.setWordWrap(True)
-            b_open.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+            b_open.clicked.connect(lambda _=False, u=url, n=name: self._open_provider(n, u))
             b_check.clicked.connect(lambda _=False, n=name: self._check(n))
             ed.returnPressed.connect(lambda n=name: self._check(n))
             grid.addWidget(title, r, 0); grid.addWidget(ed, r, 1); grid.addWidget(b_open, r, 2)
@@ -126,6 +169,50 @@ class FreeKeysDialog(QDialog):
             return "đã có key (đang tắt)"
         return "chưa có key"
 
+    def _open_provider(self, name, url):
+        # Explicit user action; never automate login or read browser credentials.
+        self.rows[name]["st"].setText("Tạo key trên trang chính thức, sau đó dán vào ô key.")
+        if name != "Groq (miễn phí)":
+            QDesktopServices.openUrl(QUrl(url))
+            return
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            QDesktopServices.openUrl(QUrl(url))
+            return
+        browser = QDialog(self)
+        browser.setWindowTitle("Groq Console")
+        browser.resize(1050, 720)
+        layout = QVBoxLayout(browser)
+        hint = QLabel("Đăng nhập, tạo key và bấm Copy trên Groq; sau đó bấm Nhận key.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        view = QWebEngineView(browser)
+        layout.addWidget(view, 1)
+        actions = QHBoxLayout()
+        external = QPushButton("Mở trình duyệt hệ thống")
+        external.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        receive = QPushButton("Nhận key đã sao chép")
+        def receive_key():
+            key = QGuiApplication.clipboard().text().strip()
+            if guess_provider(key) != name:
+                hint.setText("Clipboard chưa có API key Groq hợp lệ.")
+                return
+            if not self.rows[name]["btn"].isEnabled():
+                hint.setText("Đang kiểm tra key trước đó.")
+                return
+            self._clip_last = key
+            self.rows[name]["ed"].setText(key)
+            browser.accept()
+            self._check(name)
+        receive.clicked.connect(receive_key)
+        actions.addWidget(external)
+        actions.addWidget(receive)
+        layout.addLayout(actions)
+        view.setUrl(QUrl(url))
+        browser.exec()
+        browser.deleteLater()
+
     # ---- clipboard
     def _poll_clipboard(self):
         if not self.chk_watch.isChecked():
@@ -133,8 +220,10 @@ class FreeKeysDialog(QDialog):
         t = (QGuiApplication.clipboard().text() or "").strip()
         if not t or t == self._clip_last:
             return
-        self._clip_last = t
         name = guess_provider(t)
+        if name and name in self.rows and not self.rows[name]["btn"].isEnabled():
+            return          # nhà này đang kiểm tra key khác: chưa đánh dấu đã xem, lần quét sau nhận lại
+        self._clip_last = t
         if name and name in self.rows and t not in self._keys(name):
             self.rows[name]["ed"].setText(t)
             self.rows[name]["st"].setText("nhận key từ clipboard, đang kiểm tra…")
@@ -142,6 +231,8 @@ class FreeKeysDialog(QDialog):
 
     # ---- kiểm tra + lưu + bật
     def _check(self, name: str):
+        if not self.rows[name]["btn"].isEnabled():
+            return
         key = self.rows[name]["ed"].text().strip()
         if not key:
             self.rows[name]["st"].setText("chưa có key")
@@ -150,31 +241,48 @@ class FreeKeysDialog(QDialog):
         if not model:
             model = "openai/gpt-oss-20b:free" if name == "OpenRouter" else ""
         self.rows[name]["btn"].setEnabled(False)
+        self.rows[name]["ed"].setEnabled(False)
+        self.rows[name]["pending_key"] = key
+        self.rows[name]["pending_model"] = model
         self.rows[name]["st"].setText("đang thử gọi…")
         job = _Check(name, key, model)
         job.done.connect(self._checked)
+        self._jobs = [j for j in self._jobs if not j.isFinished()]
         self._jobs.append(job)
         job.start()
 
     def _checked(self, name, result, err):
         row = self.rows[name]
         row["btn"].setEnabled(True)
+        row["ed"].setEnabled(True)
+        key = row.pop("pending_key", "")
+        model = row.pop("pending_model", "")
         if err:
             row["st"].setText(f"✖ {err}")
             return
-        key = row["ed"].text().strip()
+        if not key:
+            return
         pc = self._pc(name)
         keys = self._keys(name)
         if key not in keys:
             keys.append(key)
         pc["keys"] = "\n".join(keys)
         pc["enabled"] = True
-        pc.setdefault("model", (PROVIDERS[name]["models"] or ["openai/gpt-oss-20b:free"])[0])
+        pc["model"] = model
         self.changed = True
-        row["st"].setText(f"✔ đang dùng — trả lời: {result}")
+        row["st"].setText(f"✔ đang dùng — {result}")
 
     def done(self, r):
-        self._clip_timer.stop()
+        # Đóng ngay cả khi còn đang kiểm tra: bỏ kết quả về sau (key đó không được lưu/bật).
         for j in self._jobs:
-            j.wait(15000)
+            if j.isRunning():
+                try:
+                    j.done.disconnect(self._checked)
+                except (RuntimeError, TypeError):
+                    pass
+                j.setParent(None)
+                _ORPHANS.append(j)
+                j.finished.connect(lambda j=j: _ORPHANS.remove(j) if j in _ORPHANS else None)
+        self._jobs = []
+        self._clip_timer.stop()
         super().done(r)

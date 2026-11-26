@@ -32,6 +32,12 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        ok = "bad" not in self.headers.get("Authorization", "")
+        b = json.dumps({"data": [{"id": "llama-3.3-70b-versatile"}]} if ok else {"error": {"message": "Invalid API Key"}}).encode()
+        self.send_response(200 if ok else 401); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         auth = self.headers.get("Authorization", "")
@@ -56,6 +62,9 @@ from app import theme  # noqa: E402
 from app.free_keys_dialog import FreeKeysDialog, guess_provider  # noqa: E402
 from app.providers import PROVIDERS  # noqa: E402
 
+import app.free_keys_dialog as _fk  # noqa: E402
+_rg = _fk.requests.get   # nhánh mới kiểm tra Groq qua https://api.groq.com/openai/v1/models (ghi cứng)
+_fk.requests.get = lambda url, **kw: _rg(url.replace("https://api.groq.com/openai/v1", BASE + "/groq"), **kw)
 for n in ("Groq (miễn phí)", "NVIDIA NIM (miễn phí)"):
     PROVIDERS[n]["base_url"] = BASE + "/" + n.split()[0].lower()
 
@@ -85,6 +94,11 @@ def pump(sec, until=None):
 def drive():
     dlg = [x for x in app.topLevelWidgets() if isinstance(x, FreeKeysDialog) and x.isVisible()][0]
     groq = "gsk_" + "Q" * 40
+    res["default_off"] = not dlg.chk_watch.isChecked()
+    QGuiApplication.clipboard().setText("gsk_" + "Z" * 40)      # chưa tích ô -> không được đọc clipboard
+    pump(2)
+    res["ignored"] = dlg.rows["Groq (miễn phí)"]["ed"].text() == ""
+    dlg.chk_watch.setChecked(True)                              # người dùng tự bật
     QGuiApplication.clipboard().setText(groq)                   # như bấm Copy trên trang Groq
     res["auto"] = pump(8, lambda: dlg.rows["Groq (miễn phí)"]["st"].text().startswith("✔"))
     dlg.rows["NVIDIA NIM (miễn phí)"]["ed"].setText("nvapi-bad" + "x" * 30)   # key sai
@@ -102,7 +116,10 @@ from PySide6.QtCore import QTimer  # noqa: E402
 QTimer.singleShot(500, drive)
 w.open_free_keys()
 pp = w.cfg.get("per_provider", {})
-rec("K2", "Bấm Copy key Groq trên trang -> app tự nhận, kiểm tra, bật", res.get("auto")
+rec("K2a", "Mặc định KHÔNG đọc clipboard; chưa tích ô thì bỏ qua key vừa copy",
+    res.get("default_off") and res.get("ignored") and "gsk_ZZZZ" not in pp.get("Groq (miễn phí)", {}).get("keys", ""),
+    f"ô tắt sẵn={res.get('default_off')}, ô key Groq vẫn trống={res.get('ignored')}")
+rec("K2", "Tích ô rồi bấm Copy key Groq trên trang -> app tự nhận, kiểm tra, bật", res.get("auto")
     and pp.get("Groq (miễn phí)", {}).get("enabled") and "gsk_" in pp.get("Groq (miễn phí)", {}).get("keys", ""),
     f"Groq={pp.get('Groq (miễn phí)')}")
 rec("K3", "Key sai báo lỗi rõ, không bật", res.get("bad", "").startswith("✖") and "nvapi-bad" not in
@@ -117,5 +134,6 @@ w.close()
 saved = json.loads((d / "settings.json").read_text(encoding="utf-8")).get("per_provider", {})
 rec("K6", "Đã lưu vào settings.json (mở lại app vẫn còn)", saved.get("Groq (miễn phí)", {}).get("enabled") and
     saved.get("NVIDIA NIM (miễn phí)", {}).get("enabled"), list(k for k, v in saved.items() if v.get("enabled")))
-print(f"\n{sum(RES)}/{len(RES)} PASS")
+print(f"\n{sum(RES)}/{len(RES)} PASS", flush=True)
+sys.stdout.flush()
 os._exit(0 if all(RES) else 1)

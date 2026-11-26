@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import srt, theme
+from .secure_store import protect_config, restore_config, restore_config_partial
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .transcribe import MEDIA_EXT, Transcriber, is_media
 from .translator import Settings, Stopped, Translator, load_glossary, needs_retranslation
@@ -321,7 +322,7 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub", "5 · Quản lý AI")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
@@ -561,6 +562,37 @@ class MainWindow(QMainWindow):
                                 lambda: self.ed_output.text().strip(), lambda: self.render_page)
         self.stack.addWidget(self._scroll(self.dub_page))      # 2 · Lồng tiếng
         self.stack.addWidget(self._scroll(self.render_page))   # 3 · Xuất video Vietsub
+        self.ai_page = QWidget()
+        ai_layout = QVBoxLayout(self.ai_page)
+        ai_card, ai_body = card("Quản lý AI", "5")
+        ai_intro = QLabel("Quản lý API key dùng chung cho Dịch phụ đề và Lồng tiếng.")
+        ai_intro.setWordWrap(True)
+        ai_body.addWidget(ai_intro)
+        self.ai_status = QLabel(); self.ai_status.setWordWrap(True)
+        ai_body.addWidget(self.ai_status)
+        self.ai_provider = QComboBox(); self.ai_provider.addItems(PROVIDERS.keys())
+        self.ai_model = QComboBox(); self.ai_model.setEditable(True)
+        self.ai_keys = QLineEdit(); self.ai_keys.setEchoMode(QLineEdit.Password)
+        self.ai_keys.setPlaceholderText("API key mới (để trống để giữ nguyên)")
+        self.ai_enabled = QCheckBox("Bật nhà cung cấp")
+        ai_body.addLayout(field("Nhà cung cấp", self.ai_provider))
+        ai_body.addLayout(field("Model", self.ai_model))
+        ai_body.addLayout(field("API key", self.ai_keys))
+        ai_body.addWidget(self.ai_enabled)
+        ai_actions = QHBoxLayout()
+        ai_save = btn("Lưu cấu hình", "ghost")
+        ai_save.clicked.connect(self._save_ai_editor)
+        ai_remove = btn("Xóa toàn bộ key", "ghost")
+        ai_remove.clicked.connect(self._remove_ai_keys)
+        ai_connect = btn("Kết nối nhà cung cấp AI", "ghost")
+        ai_connect.clicked.connect(self.open_free_keys)
+        for action in (ai_save, ai_remove, ai_connect):
+            ai_actions.addWidget(action)
+        ai_body.addLayout(ai_actions)
+        self.ai_provider.currentTextChanged.connect(self._load_ai_editor)
+        ai_layout.addWidget(ai_card)
+        ai_layout.addStretch(1)
+        self.stack.addWidget(self._scroll(self.ai_page))
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -609,9 +641,29 @@ class MainWindow(QMainWindow):
     # ---------- cấu hình
     def _load_cfg(self) -> dict:
         try:
-            return json.loads(CONFIG.read_text(encoding="utf-8"))
+            raw = json.loads(CONFIG.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return {}
+        try:
+            return restore_config(raw)
+        except Exception:  # noqa: BLE001
+            cfg, failed = restore_config_partial(raw)
+            ans = QMessageBox.question(
+                self, "Không đọc được API key",
+                "Không giải mã được API key của: " + ", ".join(failed) + ".\n\n"
+                "Thường do file cấu hình được chép từ máy khác hoặc tài khoản Windows khác "
+                "(key chỉ mở được trên đúng tài khoản đã lưu).\n\n"
+                "Xoá các key này và tiếp tục? Mọi cài đặt khác được giữ nguyên, file cũ được sao lưu "
+                "thành settings.json.bak. Sau đó bạn nhập lại key cho các nhà trên.\n\n"
+                "Chọn No: app không lưu gì để giữ nguyên file cấu hình.")
+            if ans != QMessageBox.Yes:
+                self._config_locked = True
+                return {}
+            try:
+                shutil.copy2(CONFIG, CONFIG.with_name("settings.json.bak"))
+            except OSError:
+                pass
+            return cfg
 
     def _apply_cfg(self):
         c = self.cfg
@@ -650,8 +702,12 @@ class MainWindow(QMainWindow):
         return sa
 
     def _go_page(self, i: int):
+        if not 0 <= i < self.stack.count():
+            i = 1
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
+        if i == 4:
+            self._refresh_ai_page()
         if self.cfg.get("page") == 3 and i == 2 and getattr(self.render_page, "_dub_sync", None):
             self.dub_page.pull_cover_from_render(self.render_page)
             self.render_page._dub_sync = None
@@ -682,7 +738,15 @@ class MainWindow(QMainWindow):
             refine=self.chk_refine.isChecked(),
         )
         DATA.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        if getattr(self, "_config_locked", False):
+            return
+        try:
+            payload = json.dumps(protect_config(self.cfg), ensure_ascii=False, indent=2)
+            tmp = CONFIG.with_suffix(".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, CONFIG)
+        except Exception:
+            QMessageBox.warning(self, "Lưu cấu hình", "Không thể lưu cấu hình an toàn. File cũ được giữ nguyên.")
 
     _current_provider = None
     _loading = False
@@ -930,6 +994,55 @@ class MainWindow(QMainWindow):
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
 
+    def _load_ai_editor(self, name):
+        pc = self.cfg.get("per_provider", {}).get(name, {})
+        self.ai_model.clear()
+        self.ai_model.addItems(pc.get("models_cache") or PROVIDERS[name]["models"])
+        self.ai_model.setCurrentText(pc.get("model") or self.ai_model.currentText())
+        self.ai_keys.clear()
+        self.ai_enabled.setChecked(bool(pc.get("enabled")))
+        self.ai_keys.setEnabled(PROVIDERS[name]["kind"] not in ("hf_local", "vertex_sa"))
+
+    def _save_ai_editor(self):
+        name = self.ai_provider.currentText()
+        self._save_provider_state(self.cb_provider.currentText())
+        pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
+        key = self.ai_keys.text().strip()
+        if key and self.ai_keys.isEnabled():
+            pc["keys"] = key
+        pc["model"] = self.ai_model.currentText().strip()
+        pc["enabled"] = self.ai_enabled.isChecked()
+        self._current_provider = None
+        self._on_provider(self.cb_provider.currentText())
+        self._save_cfg()
+        self._refresh_ai_page()
+
+    def _remove_ai_keys(self):
+        name = self.ai_provider.currentText()
+        if QMessageBox.question(self, "Xóa key", f"Xóa toàn bộ key của {name} trên máy?") != QMessageBox.Yes:
+            return
+        self._save_provider_state(self.cb_provider.currentText())
+        pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
+        pc["keys"] = ""
+        pc["enabled"] = False
+        self._current_provider = None
+        self._on_provider(self.cb_provider.currentText())
+        self._save_cfg()
+        self._refresh_ai_page()
+
+    def _refresh_ai_page(self):
+        self._save_provider_state(self.cb_provider.currentText())
+        rows = []
+        for name in PROVIDERS:
+            pc = self.cfg.get("per_provider", {}).get(name, {})
+            count = len([k for k in pc.get("keys", "").splitlines() if k.strip()])
+            status = "Đang bật" if pc.get("enabled") and count else ("Đã có key" if count else "Chưa có key")
+            if PROVIDERS[name]["kind"] == "hf_local":
+                status = "Chạy cục bộ — không cần key"
+            rows.append(f"{name}: {status}")
+        self.ai_status.setText("\n".join(rows))
+        self._load_ai_editor(self.ai_provider.currentText())
+
     def open_free_keys(self):
         """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
         from .free_keys_dialog import FreeKeysDialog
@@ -944,6 +1057,8 @@ class MainWindow(QMainWindow):
             n = sum(1 for pc in self.cfg.get("per_provider", {}).values() if pc.get("enabled") and pc.get("keys"))
             self._log(f"✔ Đã bật nhà cung cấp miễn phí. Đang dùng {n} nhà, hết lượt nhà này sẽ tự sang nhà khác.")
         self._refresh_using()
+        if hasattr(self, "ai_status"):
+            self._refresh_ai_page()
 
     def _test_conn(self):
         try:
@@ -1212,7 +1327,27 @@ class MainWindow(QMainWindow):
             self._save_cfg()
         except OSError:
             pass
+        self._leftover_threads = self._drain_threads(5.0)
         e.accept()
+
+    def _bg_threads(self):
+        """Mọi luồng nền đang được các trang giữ (đọc font, nạp giọng, tải model, kiểm tra key…)."""
+        from .free_keys_dialog import _ORPHANS
+        out = list(_ORPHANS)
+        for obj in (self, self.render_page, self.dub_page, self.search_page):
+            for v in list(vars(obj).values()):
+                if isinstance(v, QThread) and v not in out:
+                    out.append(v)
+        return out
+
+    def _drain_threads(self, seconds: float):
+        """Chờ luồng nền xong (tối đa `seconds`). Huỷ một QThread còn đang chạy làm Qt dừng cưỡng bức tiến trình
+        (Windows: 0xC0000409), nên luồng nào còn chạy thì trả về để lúc thoát bỏ qua bước dọn dẹp của Python."""
+        deadline = time.monotonic() + seconds
+        for t in self._bg_threads():
+            if t.isRunning():
+                t.wait(max(1, int((deadline - time.monotonic()) * 1000)))
+        return [t for t in self._bg_threads() if t.isRunning()]
 
 
 def _dark_title_bar(w):
@@ -1239,4 +1374,29 @@ def main():
     w = MainWindow()
     w.show()
     _dark_title_bar(w)
-    sys.exit(app.exec())
+    code = app.exec()
+    teardown(app, w, code)
+    sys.exit(code)
+
+
+def teardown(app, w, code: int = 0):
+    """Thoát gọn sau khi cửa sổ đã đóng (cài đặt đã lưu trong closeEvent).
+    Nếu còn luồng nền chưa xong (đã chờ 5 s), thoát thẳng để Python không huỷ QThread đang chạy."""
+    left = [t for t in getattr(w, "_leftover_threads", []) if t.isRunning()]
+    if left:
+        sys.stdout.flush(); sys.stderr.flush()
+        if sys.platform == "win32":
+            # os._exit vẫn chạy phần dọn DLL của Qt khi luồng còn sống -> 0xC0000005; TerminateProcess thì không.
+            import ctypes
+            k = ctypes.WinDLL("kernel32")
+            k.GetCurrentProcess.restype = ctypes.c_void_p
+            k.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            k.TerminateProcess(k.GetCurrentProcess(), code)
+        os._exit(code)
+    try:
+        w.deleteLater()
+        app.processEvents()
+        if hasattr(app, "shutdown"):
+            app.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
