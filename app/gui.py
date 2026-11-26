@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import srt, theme
+from .secure_store import protect_config, restore_config
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .transcribe import MEDIA_EXT, Transcriber, is_media
 from .translator import Settings, Stopped, Translator, load_glossary, needs_retranslation
@@ -609,8 +610,14 @@ class MainWindow(QMainWindow):
     # ---------- cấu hình
     def _load_cfg(self) -> dict:
         try:
-            return json.loads(CONFIG.read_text(encoding="utf-8"))
+            raw = json.loads(CONFIG.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
+            return {}
+        try:
+            return restore_config(raw)
+        except Exception:
+            QMessageBox.critical(self, "API key", "Không thể giải mã API key trên tài khoản Windows này. File cấu hình được giữ nguyên.")
+            self._config_locked = True
             return {}
 
     def _apply_cfg(self):
@@ -682,7 +689,15 @@ class MainWindow(QMainWindow):
             refine=self.chk_refine.isChecked(),
         )
         DATA.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        if getattr(self, "_config_locked", False):
+            return
+        try:
+            payload = json.dumps(protect_config(self.cfg), ensure_ascii=False, indent=2)
+            tmp = CONFIG.with_suffix(".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, CONFIG)
+        except Exception:
+            QMessageBox.warning(self, "Lưu cấu hình", "Không thể lưu cấu hình an toàn. File cũ được giữ nguyên.")
 
     _current_provider = None
     _loading = False
