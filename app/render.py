@@ -51,6 +51,16 @@ PRESETS: dict[str, dict] = {
 }
 
 
+@dataclass(frozen=True)
+class EditRegion:
+    """Independent rectangle on the original video frame (percent coordinates)."""
+    x_pct: float = 10.0
+    y_pct: float = 10.0
+    w_pct: float = 20.0
+    h_pct: float = 10.0
+    mode: str = "blur"
+
+
 @dataclass
 class Cover:
     """Che chữ cứng có sẵn trong video (vd: phụ đề tiếng Trung in sẵn)."""
@@ -93,6 +103,7 @@ class Look:
     music_vol: int = 20          # %
     voice_vol: int = 100         # % âm lượng tiếng chính
     denoise: bool = False        # giảm ồn tiếng chính
+    regions: list[EditRegion] = field(default_factory=list)
     audio_sped: bool = False     # tiếng đã khớp tốc độ sẵn (tiếng lồng) -> không đổi tốc độ tiếng nữa
 
     def any_audio(self) -> bool:
@@ -414,6 +425,28 @@ def filter_graph(info: dict, cover: Cover, with_subs: bool, look: Look | None = 
                 parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:"
                              f"color=0x{col}@{cover.box_opacity / 100:.2f}:t=fill[cv]")
             cur = "[cv]"
+    # Independent regions use source coordinates, before geometric transforms.
+    for i, region in enumerate(look.regions if look else []):
+        if region.mode not in ("blur", "box", "erase"):
+            continue
+        x = max(2, min(w - 6, int(w * region.x_pct / 100) // 2 * 2))
+        y = max(2, min(h - 6, int(h * region.y_pct / 100) // 2 * 2))
+        cw = min(w - x - 2, int(w * region.w_pct / 100)) // 2 * 2
+        ch = min(h - y - 2, int(h * region.h_pct / 100)) // 2 * 2
+        if min(cw, ch) < 4:
+            continue
+        dst = f"[region{i}]"
+        if region.mode == "erase":
+            parts.append(f"{cur}delogo=x={x}:y={y}:w={cw}:h={ch}{dst}")
+        elif region.mode == "box":
+            parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:color=black:t=fill{dst}")
+        else:
+            radius = max(1, min(30, cw // 2 - 1, ch // 2 - 1))
+            chroma = max(1, min(radius, cw // 4 - 1, ch // 4 - 1))
+            parts.append(f"{cur}split[rb{i}][rs{i}]")
+            parts.append(f"[rs{i}]crop={cw}:{ch}:{x}:{y},boxblur=luma_radius={radius}:chroma_radius={chroma}[rc{i}]")
+            parts.append(f"[rb{i}][rc{i}]overlay={x}:{y}{dst}")
+        cur = dst
     # 2) tốc độ, lật, phóng to, màu  3) phụ đề Việt  4) khung hình, logo, mờ dần
     cur = look_pre(cur, info, look, parts)
     if with_subs:
