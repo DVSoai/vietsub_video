@@ -114,7 +114,8 @@ def lines_from_srt(vi_srt: str, zh_srt: str | None = None, speakers: dict | None
 
 # ====================================================================== nhận diện nhân vật
 def _json_from(text: str):
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.S)
+    from .providers import strip_thinking
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", strip_thinking(text), flags=re.S)
     a, b = t.find("{"), t.rfind("}")
     return json.loads(t[a:b + 1])
 

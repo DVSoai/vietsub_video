@@ -75,7 +75,8 @@ def build_system_prompt(s: Settings) -> str:
 
 
 def parse_json_reply(text: str) -> dict[str, str]:
-    t = text.strip()
+    from .providers import strip_thinking
+    t = strip_thinking(text)
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.S).strip()
     start, end = t.find("{"), t.rfind("}")
     if start == -1 or end == -1:

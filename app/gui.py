@@ -352,7 +352,9 @@ class MainWindow(QMainWindow):
         khead = QHBoxLayout()
         self.lb_keys = QLabel("API KEY"); self.lb_keys.setObjectName("fieldLabel")
         self.btn_json = btn("Chọn file JSON…", "link", "Chọn file service account .json (chọn nhiều file = xoay vòng)")
-        khead.addWidget(self.lb_keys); khead.addStretch(1); khead.addWidget(self.btn_json)
+        self.lb_free = QLabel(); self.lb_free.setObjectName("hint")
+        self.lb_free.setOpenExternalLinks(True); self.lb_free.setTextFormat(Qt.RichText)
+        khead.addWidget(self.lb_keys); khead.addStretch(1); khead.addWidget(self.lb_free); khead.addWidget(self.btn_json)
         kv.addLayout(khead); kv.addWidget(self.ed_keys)
         # Vertex service account: Project ID + Location
         self.sa_wrap = QWidget()
@@ -680,6 +682,11 @@ class MainWindow(QMainWindow):
             "Tài khoản free chỉ có ít lượt mỗi tháng" if name.startswith("Hugging Face") else
             "Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
         self.ed_keys.setEnabled(not local)
+        if p.get("free"):
+            self.lb_free.setText(f'<a href="{p["signup"]}" style="color:#2fd9ab">Lấy key miễn phí ↗</a>')
+            self.lb_free.setToolTip(p.get("note", ""))
+            self.ed_keys.setPlaceholderText(f"Dán API key miễn phí…\n{p.get('note', '')}")
+        self.lb_free.setVisible(bool(p.get("free")))
         self.lb_keys.setText("FILE SERVICE ACCOUNT (.JSON)" if sa else ("KHÔNG CẦN KEY" if local else
                              ("TOKEN HUGGING FACE" if name.startswith("Hugging Face") else "API KEY")))
         self.ed_project.setText(pc.get("project", ""))
