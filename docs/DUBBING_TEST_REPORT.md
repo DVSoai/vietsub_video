@@ -73,6 +73,49 @@ python tests/qa_dubbing.py <nhãn> [T2,T5,...]
 
 Các điểm kiểm tra **không** có lỗi: cache TTS (T3), đồng bộ tốc độ 0,5×/1×/1,25×/2× (T4), xuất không gọi lại AI/TTS (T6), dừng Exporter (T7b), xem trước = video xuất (T8), cấu hình giữa 2 tab (T10).
 
+## 3b. Vùng chỉnh sửa hình (nhánh feat/video-region-editor, 2026-11-26)
+
+| Mã | Trường hợp | Kết quả |
+|---|---|---|
+| T14 | 3 vùng (che đỏ 10–20 s, xoá chữ cả video, 1 vùng tắt), xuất lồng tiếng 1,25x | PASS: chỉ 2 vùng bật được gửi sang xuất; màu đỏ chỉ có ở giây gốc 15, không có ở 5 và 25; không đọc lại TTS; video 32,00 s |
+| T14b | Vùng lưu theo từng video | PASS: video khác 0 vùng, mở lại 3 vùng, mở lại app vẫn còn |
+| — | Kéo chuột tạo vùng, di chuyển, đổi cỡ, bấm nhầm không tạo vùng | PASS (QTest điều khiển chuột thật trên hộp thoại) |
+| — | Vùng sát mép, vùng 0,5 %, 4 vùng trộn kiểu, vùng phủ gần hết khung | PASS: xuất không lỗi ffmpeg |
+| — | Xem trước (preview_frame) so với video xuất | PASS: PSNR 46,6 dB |
+| — | Vùng có thời gian + tốc độ 2x | PASS: vùng xuất hiện đúng giây gốc 10–20 |
+
+Cả bộ `tests/qa_dubbing.py`: **28/28 PASS**.
+
+## 3c. Hoàn thiện hộp thoại vùng (2026-11-26, sau commit d2bf47d)
+
+Chạy thật: Qt offscreen + QTest điều khiển chuột, ffmpeg, lưu `project.json`, xuất video qua DubWorker/Exporter. Chỉ giả lập VieNeu/Gemini như mục 1.
+
+| Mã | Trường hợp | Kết quả | Số đo |
+|---|---|---|---|
+| T14 Vùng | chỉnh sửa (có khoảng thời gian) áp đúng khi xuất lồng tiếng 1.25x | PASS | vùng gửi sang xuất=2 (1 vùng tắt bị bỏ), RGB lúc 5s=[151, 253, 0] 15s=[253, 0, 0] 25s=[151, 253, 0], TTS gọi lại=0, video=32.00s |
+| T14b Vùng | lưu theo từng video | PASS | video khác=0 vùng, mở lại=3 vùng |
+| T15 Tua | liên tục | PASS | tối đa 1 worker/ffmpeg, chỉ giữ yêu cầu mới nhất: worker chạy cùng lúc tối đa=1, ffmpeg cùng lúc tối đa=1, số lần chạy thật=17/60 yêu cầu, bị huỷ giữa chừng=15, ảnh cuối đúng yêu cầu cuối=True, ảnh còn trong thư mục tạm=1 |
+| T16 Đóng | hộp thoại khi ffmpeg đang xử lý | PASS | ffmpeg đang chạy lúc đóng=1, thời gian đóng=0.10s, ffmpeg còn lại=0, cảnh báo QThread=không, thư mục tạm còn=False |
+| T17 Thư | mục tạm được dọn khi Huỷ / Lưu / đóng cửa sổ / ffmpeg lỗi | PASS | đã kiểm 6 lần mở, còn sót=không, st_region_* trong /tmp=0, lỗi ffmpeg hiện trên giao diện=True |
+| T18 Kiểm | tra khoảng thời gian (UI + dữ liệu + xuất) | PASS | từng trường hợp đúng={'end=0 (tới hết)': True, '5→10': True, 'end = start': True, 'end < start': True, 'start vượt video': True, 'end vượt video': True}, region_filters báo lỗi=True, Exporter báo lỗi=True, hộp thoại chặn Lưu=True, tab Lồng tiếng chặn xuất=True |
+| T19 Kéo | tạo 4 hướng, đổi cỡ 4 cạnh + 4 góc, chặn ra ngoài, viền đen, khoá khi xem kết quả | PASS | chưa có khung không tạo=True, hướng={'↘': True, '↙': True, '↗': True, '↖': True}, đổi cỡ={'l': True, 'r': True, 't': True, 'b': True, 'lt': True, 'rt': True, 'lb': True, 'rb': True}, chặn ra ngoài=True, viền đen không tạo=True, khoá khi xem kết quả=True, ô số khớp=True |
+| T20 Quy | đổi toạ độ video ngang / dọc / vuông (bỏ viền đen) khớp với video xuất | PASS | {'hard.mp4': {'tỉ lệ ảnh': True, 'toạ độ %': True, 'trong vùng tím': True, 'ngoài vùng không tím': True, 'cỡ': '1280x720'}, 'doc.mp4': {'tỉ lệ ảnh': True, 'toạ độ %': True, 'trong vùng tím': True, 'ngoài vùng không tím': True, 'cỡ': '720x1280'}, 'vuong.mp4': {'tỉ lệ ảnh': True, 'toạ độ %': True, 'trong vùng tím': True, 'ngoài vùng không tím': True, 'cỡ': '720x720'}} |
+| T21 Xem | trước vùng có thời gian khớp video xuất (trước/trong/sau; thành phẩm 1.5x+phóng to+lật+phụ đề) | PASS | chỉ vùng PSNR {3.0: 50.4, 15.0: 48.4, 25.0: 48.5} dB; thành phẩm/video đứng hình (so chính xác) PSNR {3.5: 52.3, 15.5: 55.2, 26.0: 55.2} dB; thành phẩm/video lồng tiếng xuất thật có chuyển động PSNR {3.5: 18.6, 15.5: 18.8, 26.0: 42.4} dB (chỉ tham khảo: 1.5x bỏ bớt khung nên khung xuất lệch khung gốc); lỗi xuất=không |
+| T22 Huỷ | chỉnh sửa không đổi cấu hình đã lưu | PASS | trong bộ nhớ giữ nguyên=True, project.json giữ nguyên=True |
+| T23 Chạy | lại lồng tiếng (tự động, dịch lại, đọc giọng) không mất vùng đã lưu | PASS | kết quả chạy=['review', 'review', '/home/claude/vietsub_video/tests/qa_data/hard.long_tieng.mp4'], vùng trong project.json=[{'x_pct': 17, 'y_pct': 79, 'w_pct': 66, 'h_pct': 12, 'mode': 'erase', 'blur': 20, 'box_color': '#000000', 'box_opacity': 100, 'start': 2, 'end': 30, 'enabled': True}] |
+
+**Cả bộ `tests/qa_dubbing.py`: 37/37 PASS** (28 cũ + T15–T23).
+
+Lỗi tìm thấy trong lúc làm và đã sửa:
+- **T15 lần đầu FAIL**: sau khi tua liên tục còn 2 ảnh trong thư mục tạm, vì ffmpeg bị dừng giữa chừng để lại ảnh dở dang. Sửa: `_sweep()` xoá mọi ảnh trừ ảnh đang hiển thị.
+- **T21 lần đầu FAIL** (PSNR 17–19 dB ở 2/3 thời điểm). Nguyên nhân là video thử có hình chuyển động: ở 1.5x, ffmpeg bỏ bớt khung nên khung xuất lệch ±1 khung gốc, không phải lỗi xử lý vùng. Đã thêm phép so trên video đứng hình cùng cấu hình: PSNR 51–55 dB, trùng khớp. Phép so trên video chuyển động vẫn in trong kết quả để tham khảo.
+
+Chưa kiểm thử được / còn tồn tại:
+- Màn hình thật 1366×768 và 1920×1080: chỉ chụp offscreen với kích thước cửa sổ tương ứng.
+- Cửa sổ chính tối thiểu 1000×840 (có từ trước) nên không vừa 1366×768. Xem mục giới hạn trong DUBBING_ARCHITECTURE.md.
+- Khi script kiểm thử thoát mà không đóng cửa sổ chính, Qt báo `QThread: Destroyed…` từ `search_page.DownloadThread` (tab Tìm & tải). Lỗi này có từ trước, không liên quan hộp thoại vùng.
+- Chưa thử trên Windows thật (đường dẫn, NVENC, kill ffmpeg trên Windows).
+
 ## 4. Lỗi / giới hạn còn tồn tại (chưa sửa trong đợt này)
 
 1. Không kiểm thử được VieNeu-TTS, Whisper, Qwen thật: Hugging Face không truy cập được từ môi trường kiểm thử. Cần chạy trên máy có RTX 5060 để kiểm tra chất lượng giọng, tốc độ đọc thực và VRAM.

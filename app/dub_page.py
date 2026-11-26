@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 import os
 import shutil
 import subprocess
@@ -416,6 +417,33 @@ class DubPage(QWidget):
         m = ["none", "blur", "box", "erase"][rp.cb_cover.currentIndex()]
         self.cb_cover.setCurrentIndex({"none": 0, "erase": 1, "blur": 2, "box": 3}[m])
 
+    def _edit_regions(self):
+        if not self.video:
+            return QMessageBox.information(self, "Chưa có video", "Chọn video trước.")
+        from .region_dialog import RegionDialog
+        dlg = RegionDialog(self.video, self.edit_regions, self, final_cfg=self._final_preview_cfg)
+        if dlg.exec() == RegionDialog.Accepted:
+            self.edit_regions = dlg.result_regions()
+            self.project.regions = [asdict(r) for r in self.edit_regions]
+            self.project.save()
+            self._update_regions_btn()
+
+    def _final_preview_cfg(self):
+        """Cấu hình xuất hiện tại cho chế độ xem “Thành phẩm” (cùng nguồn với visual_settings/Exporter)."""
+        from .render import Cover, Look, SubStyle
+        vis = self.visual_settings()
+        cues = []
+        if vis and vis["subs"]:
+            cues = [srt.Cue(i + 1, _ts(l.start), _ts(l.end), l.text)
+                    for i, l in enumerate(self.project.lines) if l.text.strip()]
+        if not vis:
+            return cues, SubStyle(), Cover(), Look()
+        return cues, vis["style"], vis["cover"], vis["look"]
+
+    def _update_regions_btn(self):
+        n = sum(1 for r in self.edit_regions if r.enabled)
+        self.btn_regions.setText(f"Chỉnh sửa vùng hình ảnh ({n})…" if self.edit_regions else "Chỉnh sửa vùng hình ảnh…")
+
     def visual_settings(self):
         """None = chỉ thay tiếng (nhanh, không nén lại hình). Ngược lại: bộ tham số cho Exporter."""
         from dataclasses import replace
@@ -427,10 +455,12 @@ class DubPage(QWidget):
         base_look = rp._look() if rp is not None else Look()
         color = (base_look.zoom != 100 or base_look.flip or base_look.bright or base_look.contrast != 100
                  or base_look.sat != 100 or base_look.sharpen or bool(base_look.music) or base_look.fade > 0)
-        if cover.mode == "none" and not self.chk_subs.isChecked() and not aspect and not logo and not color:
+        if cover.mode == "none" and not self.chk_subs.isChecked() and not aspect and not logo and not color \
+                and not any(r.enabled for r in self.edit_regions):
             return None
         look = replace(base_look, speed=self.sp_vspeed.value(), audio_sped=True, aspect=aspect,
-                       logo=logo, logo_pos=self.cb_logo_pos.currentData(), voice_vol=100, denoise=False)
+                       logo=logo, logo_pos=self.cb_logo_pos.currentData(), voice_vol=100, denoise=False,
+                       regions=[replace(r) for r in self.edit_regions if r.enabled])
         style = rp._style() if rp is not None else SubStyle()
         opts = rp._opts() if rp is not None else ExportOpts()
         opts = replace(opts, audio_file=self.dub_audio_path(), audio_copy=False)
@@ -555,6 +585,10 @@ class DubPage(QWidget):
         cw.addLayout(_field("Từ trên xuống", self.sp_cy)); cw.addLayout(_field("Cao", self.sp_ch))
         cw.addLayout(_field("Lề 2 bên", self.sp_cx))
         v4.addWidget(self.cover_wrap)
+        self.edit_regions = []
+        self.btn_regions = _btn("Chỉnh sửa vùng hình ảnh…", "ghost")
+        self.btn_regions.clicked.connect(self._edit_regions)
+        v4.addWidget(self.btn_regions)
         v4.addWidget(self.chk_subs)
         lr = QHBoxLayout(); lr.setSpacing(6); lr.addWidget(self.ed_logo, 1); lr.addWidget(self.btn_logo)
         v4.addLayout(_field("Logo kênh của bạn", lr))
@@ -704,6 +738,9 @@ class DubPage(QWidget):
         self.video = path
         self.workdir = workdir_for(path, "")
         self.project = Project.load(path, self.workdir)
+        from .render import EditRegion
+        self.edit_regions = [EditRegion.from_dict(r) for r in self.project.regions]   # vùng của riêng video này
+        self._update_regions_btn()
         self.drop.set_files([path])
         self._refresh_files()
         self._fill_tables()
@@ -959,6 +996,17 @@ class DubPage(QWidget):
             return QMessageBox.warning(self, "Thiếu video", "Chưa chọn video")
         if mode in ("voice", "export") and not self.project.lines:
             return QMessageBox.information(self, "Chưa có câu thoại", "Bấm “Làm tự động” trước để có câu thoại và nhân vật.")
+        if mode in ("auto", "voice", "export") and any(r.enabled for r in self.edit_regions):
+            from .render import probe
+            try:
+                dur = probe(self.video)["duration"]
+            except Exception:  # noqa: BLE001
+                dur = 0.0
+            bad = [f"Vùng {i + 1}: {e}" for i, r in enumerate(self.edit_regions)
+                   if r.enabled and (e := r.time_error(dur))]
+            if bad:
+                return QMessageBox.warning(self, "Vùng chỉnh sửa không hợp lệ",
+                                           "Sửa lại trong “Chỉnh sửa vùng hình ảnh…”:\n" + "\n".join(bad))
         if mode == "export" and not os.path.exists(self.dub_audio_path()):
             return QMessageBox.information(self, "Chưa có tiếng lồng",
                                            f"Chưa có tiếng lồng ở tốc độ {self.sp_vspeed.value():g}x. "

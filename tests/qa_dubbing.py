@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import subprocess
 import sys
 import threading
@@ -53,6 +54,16 @@ def make_inputs():
         subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=240", "-f", "lavfi",
                         "-i", "sine=f=300:d=240", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-shortest",
                         str(QA / "long.mp4")], check=True)
+    if not (QA / "tinh.mp4").exists():   # video đứng hình (có chữ cứng) để so khung không bị lệch do chuyển động
+        subprocess.run([FF, "-v", "error", "-y", "-ss", "5", "-i", str(QA / "hard.mp4"), "-frames:v", "1",
+                        str(QA / "tinh.png")], check=True)
+        subprocess.run([FF, "-v", "error", "-y", "-loop", "1", "-i", str(QA / "tinh.png"), "-f", "lavfi", "-i",
+                        "sine=f=300:d=40", "-t", "40", "-r", "25", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", str(QA / "tinh.mp4")], check=True)
+    for name, size in (("doc.mp4", "720x1280"), ("vuong.mp4", "720x720")):
+        if not (QA / name).exists():
+            subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={size}:r=25:d=20", "-c:v", "libx264",
+                            "-preset", "ultrafast", str(QA / name)], check=True)
     if not (QA / "logo.png").exists():
         subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=200x80,format=rgba", "-frames:v", "1",
                         str(QA / "logo.png")], check=True)
@@ -140,6 +151,15 @@ shutil.rmtree(DATA, ignore_errors=True)
 g.DATA = DATA; g.PROMPTS = DATA / "prompts"; g.CONFIG = DATA / "settings.json"
 g.PROVIDERS["Vertex AI (API key)"]["base_url"] = "http://127.0.0.1:8765/vxa"
 
+QT_WARN: list[str] = []
+
+
+def _qt_msg(mode, ctx, msg):
+    QT_WARN.append(msg)
+
+
+from PySide6.QtCore import qInstallMessageHandler  # noqa: E402
+qInstallMessageHandler(_qt_msg)
 app = QApplication(sys.argv); app.setStyle("Fusion"); app.setFont(theme.app_font()); app.setStyleSheet(theme.stylesheet())
 w = g.MainWindow(); w.show()
 w.cb_provider.setCurrentText("Vertex AI (API key)"); w.ed_keys.setPlainText("k"); w.cb_model.setCurrentText("gemini-x")
@@ -474,6 +494,369 @@ if want("T10"):
     rec("T10b", "Căn vùng ở tab Xuất video rồi quay lại: vị trí về tab Lồng tiếng", got[:2] == (70.0, 9.0) and "mờ" in got[2],
         f"sau khi quay lại: y={got[0]} cao={got[1]} chế độ='{got[2]}'")
     rp.lk_sat.setValue(100); rp.lk_zoom.setValue(100); rp.lk_speed.setValue(1.0); rp.lk_logo.setText("")
+
+# ================================================================ T14 vùng chỉnh sửa hình trong xuất lồng tiếng
+if want("T14"):
+    from app.render import EditRegion
+    from dataclasses import asdict
+    d.set_video(HARD)
+    d.sp_vspeed.setValue(1.25)
+    d.cb_cover.setCurrentIndex(0); d.chk_subs.setChecked(False); d.cb_aspect.setCurrentIndex(0); d.ed_logo.setText("")
+    d.edit_regions = [EditRegion(30, 20, 10, 10, "box", box_color="#ff0000", start=10, end=20),
+                      EditRegion(17, 79, 66, 12, "erase"), EditRegion(60, 20, 10, 10, "blur", enabled=False)]
+    d.project.regions = [asdict(r) for r in d.edit_regions]; d.project.save()
+    vis = d.visual_settings()
+    n_vis = len(vis["look"].regions) if vis else 0
+    if not os.path.exists(d.dub_audio_path()):
+        run("voice")
+    FakeVieneu.calls.clear()
+    r = run("export")
+    out = d.dub_video_path()
+
+    def px_at(t_orig):
+        rr = subprocess.run([FF, "-v", "error", "-ss", f"{t_orig / 1.25:.3f}", "-i", out, "-frames:v", "1", "-vf",
+                             "crop=20:20:420:170,format=rgb24", "-f", "rawvideo", "-"], capture_output=True)
+        return [int(v) for v in np.frombuffer(rr.stdout, np.uint8).reshape(-1, 3).mean(0)]
+    p5, p15, p25 = px_at(5), px_at(15), px_at(25)
+    red = lambda p_: p_[0] > 200 and p_[1] < 90 and p_[2] < 90  # noqa: E731
+    ok = (n_vis == 2 and red(p15) and not red(p5) and not red(p25) and len(FakeVieneu.calls) == 0
+          and abs(probe_dur(out, "v:0") - 32) < 0.3)
+    rec("T14", "Vùng chỉnh sửa (có khoảng thời gian) áp đúng khi xuất lồng tiếng 1.25x", ok,
+        f"vùng gửi sang xuất={n_vis} (1 vùng tắt bị bỏ), RGB lúc 5s={p5} 15s={p15} 25s={p25}, "
+        f"TTS gọi lại={len(FakeVieneu.calls)}, video={probe_dur(out, 'v:0'):.2f}s")
+    d.set_video(str(QA / "long.mp4")); n_other = len(d.edit_regions)
+    d.set_video(HARD); n_back = len(d.edit_regions)
+    rec("T14b", "Vùng lưu theo từng video", n_other == 0 and n_back == 3, f"video khác={n_other} vùng, mở lại={n_back} vùng")
+    d.edit_regions = []; d.project.regions = []; d.project.save()
+
+
+# ================================================================ T15–T23 hộp thoại vùng chỉnh sửa
+def pump(sec):
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < sec:
+        app.processEvents()
+        time.sleep(0.005)
+
+
+def wait_shown(dlg, timeout=20):
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        app.processEvents()
+        if dlg._shown and f"f{dlg._tag}.png" in dlg._shown and not dlg.running_workers():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def my_ffmpeg():
+    r = subprocess.run(["pgrep", "-P", str(os.getpid()), "-f", "ffmpeg"], capture_output=True, text=True)
+    return len(r.stdout.split())
+
+
+if any(want(t) for t in ("T15", "T16", "T17", "T18", "T19", "T20", "T21", "T22", "T23")):
+    from app.region_dialog import RegionDialog
+    from app.render import EditRegion, Exporter, ExportOpts, region_filters, preview_frame, Look, Cover, SubStyle, probe
+    from dataclasses import asdict, replace as dc_replace
+    from PySide6.QtCore import QPoint, Qt as _Qt
+    from PySide6.QtTest import QTest
+    import re as _re
+
+    def psnr(a, b):
+        rr = subprocess.run([FF, "-i", a, "-i", b, "-lavfi", "psnr", "-f", "null", "-"], capture_output=True, text=True)
+        m = _re.search(r"average:([\d.inf]+)", rr.stderr)
+        return 99.0 if (m and m.group(1) == "inf") else (float(m.group(1)) if m else -1.0)
+
+    d.set_video(HARD)
+    STRAY0 = set(Path(tempfile.gettempdir()).glob("st_region_*"))
+
+if want("T15"):
+    dlg = RegionDialog(HARD, [EditRegion(17, 79, 66, 12, "erase"), EditRegion(5, 5, 20, 20, "blur")], d)
+    dlg.show(); wait_shown(dlg)
+    dlg.cb_view.setCurrentIndex(1); wait_shown(dlg)
+    max_w, max_ff, started0 = 0, 0, dlg.stats["started"]
+    for k in range(60):                         # tua liên tục 60 lần, gần như không nghỉ
+        dlg.slider.setValue(20 + k * 5)
+        dlg._request()
+        for _ in range(3):
+            app.processEvents()
+            max_w = max(max_w, dlg.running_workers()); max_ff = max(max_ff, my_ffmpeg())
+            time.sleep(0.004)
+    ok_last = wait_shown(dlg)
+    pngs = len(list(Path(dlg._tmp).glob("*.png")))
+    started = dlg.stats["started"] - started0
+    rec("T15", "Tua liên tục: tối đa 1 worker/ffmpeg, chỉ giữ yêu cầu mới nhất", max_w <= 1 and max_ff <= 1 and ok_last
+        and started < 60 and pngs == 1,
+        f"worker chạy cùng lúc tối đa={max_w}, ffmpeg cùng lúc tối đa={max_ff}, số lần chạy thật={started}/60 yêu cầu, "
+        f"bị huỷ giữa chừng={dlg.stats['cancelled']}, ảnh cuối đúng yêu cầu cuối={ok_last}, ảnh còn trong thư mục tạm={pngs}")
+    tmp15 = dlg._tmp
+    dlg.reject(); pump(0.2)
+    T17_dirs = [tmp15]
+
+if want("T16"):
+    QT_WARN.clear()
+    dlg = RegionDialog(LONG, [EditRegion(10, 10, 60, 60, "erase"), EditRegion(30, 30, 40, 40, "blur", blur=40)], d,
+                       final_cfg=lambda: ([], SubStyle(font_family="DejaVu Sans"), Cover(mode="erase", y_pct=80, h_pct=12),
+                                          Look(zoom=120, sat=130, aspect="9:16")))
+    dlg.show(); wait_shown(dlg)
+    dlg.cb_view.setCurrentIndex(2)
+    dlg.slider.setValue(dlg.slider.maximum() - 50); dlg._request()
+    t0 = time.monotonic()
+    while my_ffmpeg() == 0 and time.monotonic() - t0 < 5:
+        app.processEvents(); time.sleep(0.005)
+    running = my_ffmpeg()
+    tmp16 = dlg._tmp
+    t1 = time.monotonic(); dlg.reject(); close_s = time.monotonic() - t1
+    pump(0.3)
+    del dlg; import gc; gc.collect(); pump(0.2)
+    left = my_ffmpeg()
+    destroyed = [m for m in QT_WARN if "Destroyed while thread" in m]
+    rec("T16", "Đóng hộp thoại khi ffmpeg đang xử lý", running >= 1 and close_s < 2 and left == 0 and not destroyed
+        and not os.path.exists(tmp16),
+        f"ffmpeg đang chạy lúc đóng={running}, thời gian đóng={close_s:.2f}s, ffmpeg còn lại={left}, "
+        f"cảnh báo QThread={destroyed or 'không'}, thư mục tạm còn={os.path.exists(tmp16)}")
+    T17_dirs = (globals().get("T17_dirs") or []) + [tmp16]
+
+if want("T17"):
+    # đóng bằng Huỷ, Lưu, nút X (closeEvent), và khi ffmpeg lỗi
+    dirs = list(globals().get("T17_dirs") or [])
+    for how in ("huy", "luu", "dong"):
+        dlg = RegionDialog(HARD, [EditRegion(17, 79, 66, 12)], d); dlg.show(); wait_shown(dlg)
+        dirs.append(dlg._tmp)
+        {"huy": dlg.reject, "luu": dlg._try_accept, "dong": dlg.close}[how]()
+        pump(0.1)
+    dlg = RegionDialog(HARD, [], d); dlg.show(); wait_shown(dlg)
+    dlg.video = str(QA / "khong_ton_tai.mp4"); dlg._request(); pump(1.5)
+    err_shown = dlg.lb_state.text().startswith("✖")
+    dirs.append(dlg._tmp); dlg.reject(); pump(0.1)
+    left = [x for x in dirs if os.path.exists(x)]
+    stray = [x for x in Path(tempfile.gettempdir()).glob("st_region_*") if x not in STRAY0]
+    rec("T17", "Thư mục tạm được dọn khi Huỷ / Lưu / đóng cửa sổ / ffmpeg lỗi", not left and not stray and err_shown,
+        f"đã kiểm {len(dirs)} lần mở, còn sót={left or 'không'}, st_region_* trong /tmp={len(stray)}, "
+        f"lỗi ffmpeg hiện trên giao diện={err_shown}")
+
+if want("T18"):
+    from PySide6.QtWidgets import QMessageBox as _QMB
+    warned = []
+    orig_warn = _QMB.warning
+    _QMB.warning = staticmethod(lambda *a, **k: warned.append(a[2] if len(a) > 2 else "") or _QMB.Ok)
+    dur = 40.0
+    cases = {"end=0 (tới hết)": (EditRegion(start=5, end=0), True), "5→10": (EditRegion(start=5, end=10), True),
+             "end = start": (EditRegion(start=10, end=10), False), "end < start": (EditRegion(start=12, end=8), False),
+             "start vượt video": (EditRegion(start=45, end=0), False), "end vượt video": (EditRegion(start=5, end=60), False)}
+    res = {k: (not r.time_error(dur)) == exp for k, (r, exp) in cases.items()}
+    raised = False
+    try:
+        region_filters("[0:v]", [EditRegion(start=12, end=8)], {"w": 1280, "h": 720, "duration": dur}, [])
+    except ValueError:
+        raised = True
+    exp_raised = False
+    try:
+        Exporter(HARD, [], SubStyle(font_family="DejaVu Sans"), Cover(), ExportOpts(), str(QA / "t18.mp4"),
+                 look=Look(regions=[EditRegion(start=12, end=8)]), log=lambda *_: None).run()
+    except ValueError:
+        exp_raised = True
+    dlg = RegionDialog(HARD, [EditRegion(start=12, end=8)], d); dlg.show()
+    accepted = []
+    dlg.accepted.connect(lambda: accepted.append(1))
+    dlg._try_accept(); pump(0.1)
+    blocked = not accepted and bool(warned)
+    dlg.reject(); pump(0.1)
+    d.edit_regions = [EditRegion(start=12, end=8)]
+    warned.clear(); d._run("export")
+    run_blocked = bool(warned) and not (d.worker and d.worker.isRunning())
+    d.edit_regions = []
+    _QMB.warning = orig_warn
+    rec("T18", "Kiểm tra khoảng thời gian (UI + dữ liệu + xuất)", all(res.values()) and raised and exp_raised and blocked
+        and run_blocked, f"từng trường hợp đúng={res}, region_filters báo lỗi={raised}, Exporter báo lỗi={exp_raised}, "
+        f"hộp thoại chặn Lưu={blocked}, tab Lồng tiếng chặn xuất={run_blocked}")
+
+if want("T19"):
+    dlg = RegionDialog(HARD, [], d); dlg.show()
+    c = dlg.canvas
+    # chưa có khung hình -> không tạo vùng
+    c.pix = None
+    QTest.mousePress(c, _Qt.LeftButton, _Qt.NoModifier, QPoint(300, 200)); QTest.mouseMove(c, QPoint(400, 260))
+    QTest.mouseRelease(c, _Qt.LeftButton, _Qt.NoModifier, QPoint(400, 260))
+    no_frame = len(dlg.regions) == 0
+    wait_shown(dlg)
+    r = c.img_rect()
+
+    def pt(xp, yp):
+        return QPoint(round(r.x() + r.width() * xp / 100), round(r.y() + r.height() * yp / 100))
+
+    def drag(a, b):
+        QTest.mousePress(c, _Qt.LeftButton, _Qt.NoModifier, a); QTest.mouseMove(c, (a + b) / 2); QTest.mouseMove(c, b)
+        QTest.mouseRelease(c, _Qt.LeftButton, _Qt.NoModifier, b)
+    dirs_ok = {}
+    for name, (a, b) in {"↘": ((20, 20), (40, 40)), "↙": ((40, 20), (20, 40)), "↗": ((20, 40), (40, 20)),
+                         "↖": ((40, 40), (20, 20))}.items():
+        dlg.regions.clear(); c.sel = -1
+        drag(pt(*a), pt(*b))
+        g = dlg.regions[0] if dlg.regions else None
+        dirs_ok[name] = bool(g) and all(abs(v - e) < 0.6 for v, e in ((g.x_pct, 20), (g.y_pct, 20), (g.w_pct, 20), (g.h_pct, 20)))
+    # đổi cỡ từ 4 cạnh và 4 góc của vùng 20,20,20,20
+    exp = {"l": (10, 20, 30, 20), "r": (20, 20, 30, 20), "t": (20, 10, 20, 30), "b": (20, 20, 20, 30),
+           "lt": (10, 10, 30, 30), "rt": (20, 10, 30, 30), "lb": (10, 20, 30, 30), "rb": (20, 20, 30, 30)}
+    anchor = {"l": (20, 30), "r": (40, 30), "t": (30, 20), "b": (30, 40), "lt": (20, 20), "rt": (40, 20),
+              "lb": (20, 40), "rb": (40, 40)}
+    res_ok = {}
+    for e, want_v in exp.items():
+        dlg.regions[:] = [EditRegion(20, 20, 20, 20)]; c.sel = 0
+        ax, ay = anchor[e]
+        bx = ax + (-10 if "l" in e else 10 if "r" in e else 0)
+        by = ay + (-10 if "t" in e else 10 if "b" in e else 0)
+        drag(pt(ax, ay), pt(bx, by))
+        g = dlg.regions[0]
+        res_ok[e] = all(abs(v - w_) < 0.6 for v, w_ in zip((g.x_pct, g.y_pct, g.w_pct, g.h_pct), want_v))
+    # di chuyển ra ngoài khung bị chặn
+    dlg.regions[:] = [EditRegion(70, 70, 20, 20)]; c.sel = 0
+    drag(pt(80, 80), QPoint(int(r.right() + 200), int(r.bottom() + 200)))
+    g = dlg.regions[0]
+    clamp = abs(g.x_pct - 80) < 0.6 and abs(g.y_pct - 80) < 0.6
+    # bấm vào viền đen (letterbox) không tạo vùng
+    dlg.regions.clear(); c.sel = -1
+    lb_pt = QPoint(int(r.center().x()), max(1, int(r.top()) - 5)) if r.top() > 6 else QPoint(max(1, int(r.left()) - 5), int(r.center().y()))
+    drag(lb_pt, pt(50, 50))
+    no_lb = len(dlg.regions) == 0
+    # đang xem kết quả: không sửa được
+    dlg.regions[:] = [EditRegion(20, 20, 20, 20)]
+    dlg.cb_view.setCurrentIndex(1); wait_shown(dlg)
+    drag(pt(30, 30), pt(60, 60))
+    locked = dlg.regions[0].x_pct == 20 and len(dlg.regions) == 1
+    # đồng bộ canvas -> ô số
+    dlg.cb_view.setCurrentIndex(0); wait_shown(dlg)
+    dlg._select(0); drag(pt(30, 30), pt(35, 33))
+    g = dlg.regions[0]
+    synced = all(abs(sp.value() - v) < 0.06 for sp, v in zip(dlg.sp_xywh, (g.x_pct, g.y_pct, g.w_pct, g.h_pct)))
+    dlg.reject(); pump(0.1)
+    rec("T19", "Kéo tạo 4 hướng, đổi cỡ 4 cạnh + 4 góc, chặn ra ngoài, viền đen, khoá khi xem kết quả",
+        no_frame and all(dirs_ok.values()) and all(res_ok.values()) and clamp and no_lb and locked and synced,
+        f"chưa có khung không tạo={no_frame}, hướng={dirs_ok}, đổi cỡ={res_ok}, chặn ra ngoài={clamp}, "
+        f"viền đen không tạo={no_lb}, khoá khi xem kết quả={locked}, ô số khớp={synced}")
+
+if want("T20"):
+    out_ok = {}
+    for name in ("hard.mp4", "doc.mp4", "vuong.mp4"):
+        vid = str(QA / name)
+        dlg = RegionDialog(vid, [], d); dlg.show(); dlg.resize(1000, 600); pump(0.2); wait_shown(dlg)
+        c = dlg.canvas; r = c.img_rect()
+        W, H = dlg.info["w"], dlg.info["h"]
+        ar_ok = abs(r.width() / r.height() - W / H) < 0.01
+        # kéo từ pixel video (25%,25%) tới (75%,50%)
+        a = QPoint(round(r.x() + r.width() * 0.25), round(r.y() + r.height() * 0.25))
+        b = QPoint(round(r.x() + r.width() * 0.75), round(r.y() + r.height() * 0.50))
+        QTest.mousePress(c, _Qt.LeftButton, _Qt.NoModifier, a); QTest.mouseMove(c, b)
+        QTest.mouseRelease(c, _Qt.LeftButton, _Qt.NoModifier, b)
+        g = dlg.regions[0]
+        tol = 100 / min(r.width(), r.height()) + 0.1           # sai số 1 điểm ảnh màn hình
+        pct_ok = all(abs(v - e) < tol for v, e in ((g.x_pct, 25), (g.y_pct, 25), (g.w_pct, 50), (g.h_pct, 25)))
+        g = dc_replace(g, mode="box", box_color="#ff00ff")
+        dlg.reject(); pump(0.1)
+        outp = str(QA / f"t20_{name}")
+        Exporter(vid, [], SubStyle(font_family="DejaVu Sans"), Cover(), ExportOpts(), outp, look=Look(regions=[g]),
+                 log=lambda *_: None).run()
+
+        def px(xp, yp):
+            rr = subprocess.run([FF, "-v", "error", "-ss", "2", "-i", outp, "-frames:v", "1", "-vf",
+                                 f"crop=4:4:{int(W * xp)}:{int(H * yp)},format=rgb24", "-f", "rawvideo", "-"], capture_output=True)
+            return [int(v) for v in np.frombuffer(rr.stdout, np.uint8).reshape(-1, 3).mean(0)]
+        inside = px(0.5, 0.37); out_l = px(0.20, 0.37); out_b = px(0.5, 0.56)
+        mag = lambda p_: p_[0] > 200 and p_[1] < 80 and p_[2] > 200  # noqa: E731
+        out_ok[name] = {"tỉ lệ ảnh": ar_ok, "toạ độ %": pct_ok, "trong vùng tím": mag(inside),
+                        "ngoài vùng không tím": not mag(out_l) and not mag(out_b), "cỡ": f"{W}x{H}"}
+    ok = all(v["tỉ lệ ảnh"] and v["toạ độ %"] and v["trong vùng tím"] and v["ngoài vùng không tím"] for v in out_ok.values())
+    rec("T20", "Quy đổi toạ độ video ngang / dọc / vuông (bỏ viền đen) khớp với video xuất", ok, str(out_ok))
+
+if want("T21"):
+    regs = [EditRegion(30, 20, 15, 15, "box", box_color="#ff0000", start=10, end=20), EditRegion(17, 79, 66, 12, "erase"),
+            EditRegion(60, 15, 20, 20, "blur", blur=30, start=5, end=0)]
+    st = SubStyle(font_family="DejaVu Sans")
+    # a) chế độ “Chỉ xử lý vùng” so với xuất chỉ có vùng, trước / trong / sau khoảng thời gian
+    outp = str(QA / "t21a.mp4")
+    Exporter(HARD, [], st, Cover(), ExportOpts(crf=12), outp, look=Look(regions=regs), log=lambda *_: None).run()
+    pa = {}
+    for t_ in (3.0, 15.0, 25.0):
+        pv = str(QA / "t21_prev.png"); ex = str(QA / "t21_exp.png")
+        preview_frame(HARD, [], st, Cover(), t_, pv, max_w=4000, look=Look(regions=regs))
+        subprocess.run([FF, "-v", "error", "-y", "-ss", f"{t_:.3f}", "-i", outp, "-frames:v", "1", ex], check=True)
+        pa[t_] = round(psnr(pv, ex), 1)
+    # b) “Thành phẩm” trong hộp thoại so với video xuất (1.5x, phóng to, lật, phụ đề, che chữ, nhiều vùng).
+    #    b1: video lồng tiếng xuất thật qua DubWorker (testsrc2 có hình chuyển động -> chỉ so ở khung khớp nhất)
+    #    b2: video đứng hình, cùng cấu hình, qua Exporter -> so chính xác từng khung, không lệch do chuyển động
+    rp = w.render_page
+    rp.lk_zoom.setValue(110); rp.lk_flip.setChecked(True)
+    d.set_video(HARD)
+    d.sp_vspeed.setValue(1.5); d.chk_subs.setChecked(True); d.cb_cover.setCurrentIndex(1); d.cb_aspect.setCurrentIndex(0)
+    d.ed_logo.setText(""); d.edit_regions = [dc_replace(x) for x in regs]
+    if not os.path.exists(d.dub_audio_path()):
+        run("voice")
+    r_ = run("export")
+    outv = d.dub_video_path()
+    cfg = d._final_preview_cfg()
+    fps_out = probe(outv)["fps"] or 25.0
+
+    def compare(video, exported, times, exact):
+        dl = RegionDialog(video, d.edit_regions, d, final_cfg=lambda: cfg); dl.show(); wait_shown(dl)
+        dl.cb_view.setCurrentIndex(2)
+        res = {}
+        for t_ in times:
+            dl.slider.setValue(int(round(t_ * 10))); dl._request(); wait_shown(dl, 40)
+            shot = str(QA / f"t21_dlg_{Path(video).stem}_{t_}.png"); shutil.copy(dl._shown, shot)
+            best = -1.0
+            for k in ([0] if exact else range(-2, 3)):
+                ex = str(QA / "t21_exp2.png")
+                subprocess.run([FF, "-v", "error", "-y", "-ss", f"{max(0, t_ / 1.5 + k / fps_out):.4f}", "-i", exported,
+                                "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", ex], check=True)
+                best = max(best, psnr(shot, ex))
+            res[t_] = round(best, 1)
+        dl.reject(); pump(0.1)
+        return res
+    pb1 = compare(HARD, outv, (3.5, 15.5, 26.0), exact=False)
+    still = str(QA / "tinh.mp4"); out_still = str(QA / "t21_tinh_xuat.mp4")
+    cues, style, cover, look = cfg
+    Exporter(still, cues, style, cover, ExportOpts(crf=12), out_still, look=dc_replace(look, audio_sped=False),
+             log=lambda *_: None).run()
+    pb2 = compare(still, out_still, (3.5, 15.5, 26.0), exact=True)
+    rp.lk_zoom.setValue(100); rp.lk_flip.setChecked(False); d.sp_vspeed.setValue(1.0); d.chk_subs.setChecked(False)
+    d.cb_cover.setCurrentIndex(0); d.edit_regions = []
+    rec("T21", "Xem trước vùng có thời gian khớp video xuất (trước/trong/sau; thành phẩm 1.5x+phóng to+lật+phụ đề)",
+        all(v > 30 for v in pa.values()) and all(v > 30 for v in pb2.values()) and not r_.get("err"),
+        f"chỉ vùng PSNR {pa} dB; thành phẩm/video đứng hình (so chính xác) PSNR {pb2} dB; "
+        f"thành phẩm/video lồng tiếng xuất thật có chuyển động PSNR {pb1} dB (chỉ tham khảo: 1.5x bỏ bớt khung "
+        f"nên khung xuất lệch khung gốc); lỗi xuất={r_.get('err') or 'không'}")
+
+if want("T22"):
+    d.set_video(HARD)
+    saved = [EditRegion(17, 79, 66, 12, "erase"), EditRegion(5, 5, 10, 10, "blur")]
+    d.edit_regions = [dc_replace(x) for x in saved]
+    d.project.regions = [asdict(x) for x in saved]; d.project.save()
+    before = Path(d.project.path).read_text(encoding="utf-8")
+
+    def tamper():
+        dl = [x for x in app.topLevelWidgets() if isinstance(x, RegionDialog) and x.isVisible()][0]
+        dl.regions[0].x_pct = 1; dl.regions.append(EditRegion(50, 50, 10, 10)); dl._delete()
+        dl.reject()
+    QTimer.singleShot(800, tamper)
+    d._edit_regions()
+    same_mem = [asdict(x) for x in d.edit_regions] == [asdict(x) for x in saved]
+    same_file = Path(d.project.path).read_text(encoding="utf-8") == before
+    rec("T22", "Huỷ chỉnh sửa không đổi cấu hình đã lưu", same_mem and same_file,
+        f"trong bộ nhớ giữ nguyên={same_mem}, project.json giữ nguyên={same_file}")
+
+if want("T23"):
+    d.set_video(HARD)
+    keep = [EditRegion(17, 79, 66, 12, "erase", start=2, end=30)]
+    d.edit_regions = [dc_replace(x) for x in keep]
+    d.project.regions = [asdict(x) for x in keep]; d.project.save()
+    r1 = run("auto")
+    d.chk_retr.setChecked(True); r2 = run("auto"); d.chk_retr.setChecked(False)
+    r3 = run("voice")
+    on_disk = json.load(open(d.project.path, encoding="utf-8")).get("regions")
+    d.set_video(HARD)
+    ok = on_disk == [asdict(x) for x in keep] and [asdict(x) for x in d.edit_regions] == on_disk
+    rec("T23", "Chạy lại lồng tiếng (tự động, dịch lại, đọc giọng) không mất vùng đã lưu", ok and not (r1.get("err") or r2.get("err") or r3.get("err")),
+        f"kết quả chạy={[x.get('out') or x.get('err') for x in (r1, r2, r3)]}, vùng trong project.json={on_disk}")
+    d.edit_regions = []; d.project.regions = []; d.project.save()
 
 rec("T11", "DubWorker không gọi hàm đọc widget từ luồng nền", not OFF_THREAD,
     f"gọi từ luồng nền: {OFF_THREAD or 'không có'}")
