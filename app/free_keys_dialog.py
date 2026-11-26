@@ -72,7 +72,7 @@ class FreeKeysDialog(QDialog):
                      "tất cả nhà đã có key; nhà nào hết lượt thì tự chuyển sang nhà khác.")
         top.setWordWrap(True); top.setTextFormat(Qt.RichText)
         self.chk_watch = QCheckBox("Tự nhận key khi tôi bấm Copy (theo dõi clipboard lúc hộp thoại đang mở)")
-        self.chk_watch.setChecked(True)
+        self.chk_watch.setChecked(False)
 
         grid_w = QWidget(); grid = QGridLayout(grid_w); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(8)
         for r, name in enumerate(names):
@@ -135,13 +135,15 @@ class FreeKeysDialog(QDialog):
             return
         self._clip_last = t
         name = guess_provider(t)
-        if name and name in self.rows and t not in self._keys(name):
+        if name and name in self.rows and self.rows[name]["btn"].isEnabled() and t not in self._keys(name):
             self.rows[name]["ed"].setText(t)
             self.rows[name]["st"].setText("nhận key từ clipboard, đang kiểm tra…")
             self._check(name)
 
     # ---- kiểm tra + lưu + bật
     def _check(self, name: str):
+        if not self.rows[name]["btn"].isEnabled():
+            return
         key = self.rows[name]["ed"].text().strip()
         if not key:
             self.rows[name]["st"].setText("chưa có key")
@@ -150,6 +152,9 @@ class FreeKeysDialog(QDialog):
         if not model:
             model = "openai/gpt-oss-20b:free" if name == "OpenRouter" else ""
         self.rows[name]["btn"].setEnabled(False)
+        self.rows[name]["ed"].setEnabled(False)
+        self.rows[name]["pending_key"] = key
+        self.rows[name]["pending_model"] = model
         self.rows[name]["st"].setText("đang thử gọi…")
         job = _Check(name, key, model)
         job.done.connect(self._checked)
@@ -159,17 +164,21 @@ class FreeKeysDialog(QDialog):
     def _checked(self, name, result, err):
         row = self.rows[name]
         row["btn"].setEnabled(True)
+        row["ed"].setEnabled(True)
+        key = row.pop("pending_key", "")
+        model = row.pop("pending_model", "")
         if err:
             row["st"].setText(f"✖ {err}")
             return
-        key = row["ed"].text().strip()
+        if not key:
+            return
         pc = self._pc(name)
         keys = self._keys(name)
         if key not in keys:
             keys.append(key)
         pc["keys"] = "\n".join(keys)
         pc["enabled"] = True
-        pc.setdefault("model", (PROVIDERS[name]["models"] or ["openai/gpt-oss-20b:free"])[0])
+        pc["model"] = model
         self.changed = True
         row["st"].setText(f"✔ đang dùng — trả lời: {result}")
 
