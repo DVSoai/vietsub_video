@@ -22,6 +22,19 @@ jobs:
           python -m pip install -r requirements.txt
           python -c "import sys, PySide6; print(sys.version, PySide6.__version__)"
           python -c "import PySide6.QtWebEngineWidgets; print('QtWebEngine OK')"
+      - name: Chan doan ma thoat
+        shell: cmd
+        run: |
+          python -c "import os; os._exit(0)"
+          echo plain_os_exit=%ERRORLEVEL%
+          python -c "import os,sys; os.environ['QT_QPA_PLATFORM']='offscreen'; from PySide6.QtWidgets import QApplication; a=QApplication(sys.argv); os._exit(0)"
+          echo qt_os_exit=%ERRORLEVEL%
+          python -c "import os,sys,threading,time; os.environ['QT_QPA_PLATFORM']='offscreen'; from PySide6.QtWidgets import QApplication; from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler; s=ThreadingHTTPServer(('127.0.0.1',0),BaseHTTPRequestHandler); threading.Thread(target=s.serve_forever,daemon=True).start(); a=QApplication(sys.argv); os._exit(0)"
+          echo qt_server_os_exit=%ERRORLEVEL%
+          python tests/test_ai_connect.py > NUL 2> err.txt
+          echo test_ai_connect=%ERRORLEVEL%
+          type err.txt
+          exit /b 0
       - name: test_ai_connect (DPAPI that tren Windows)
         run: python tests/test_ai_connect.py
       - name: test_free_keys_dialog
