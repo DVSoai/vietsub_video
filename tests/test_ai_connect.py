@@ -178,5 +178,6 @@ after = g.CONFIG.read_text(encoding="utf-8")
 rec("A8", "keys_dpapi hỏng/không giải mã được: báo lỗi, KHÔNG ghi đè file cấu hình",
     BOXES and BOXES[0][0] == "critical" and before == after, f"thông báo={BOXES[:1]}, file giữ nguyên={before == after}")
 
-print(f"\n{sum(RES)}/{len(RES)} PASS  ({'Windows' if WIN else sys.platform})")
+print(f"\n{sum(RES)}/{len(RES)} PASS  ({'Windows' if WIN else sys.platform})", flush=True)
+sys.stdout.flush()
 os._exit(0 if all(RES) else 1)
