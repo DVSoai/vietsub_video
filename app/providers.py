@@ -9,9 +9,19 @@ from __future__ import annotations
 import json
 import threading
 
+import re
+import time
 import requests
 
 TIMEOUT = 180
+
+
+def strip_thinking(text: str) -> str:
+    """Model suy luận (DeepSeek-R1, Qwen3, GLM…) có thể trả kèm <think>…</think> trước câu trả lời."""
+    t = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S | re.I)
+    if "</think>" in t:                     # chỉ có thẻ đóng (phần mở bị cắt)
+        t = t.split("</think>", 1)[1]
+    return t.strip()
 
 
 class ProviderError(Exception):
@@ -75,6 +85,48 @@ PROVIDERS: dict[str, dict] = {
         "models": ["Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-14B-Instruct",
                    "Qwen/Qwen2.5-1.5B-Instruct"],
     },
+    # ---- nhà cung cấp có gói MIỄN PHÍ (chuẩn OpenAI). Giới hạn đặt thấp hơn mức nhà cung cấp cho phép
+    # để không bị khoá; "rpm" = request/phút cho MỖI key, "concurrency" = số request chạy cùng lúc mỗi key.
+    "Groq (miễn phí)": {
+        "kind": "openai",
+        "base_url": "https://api.groq.com/openai/v1",
+        "models": ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
+        "free": True, "rpm": 25, "concurrency": 2,
+        "signup": "https://console.groq.com/keys",
+        "note": "Rất nhanh. Gói miễn phí giới hạn số request và token mỗi phút/ngày.",
+    },
+    "Cerebras (miễn phí)": {
+        "kind": "openai",
+        "base_url": "https://api.cerebras.ai/v1",
+        "models": ["gpt-oss-120b", "qwen-3.8-27b"],
+        "free": True, "rpm": 25, "concurrency": 2,
+        "signup": "https://cloud.cerebras.ai",
+        "note": "Rất nhanh. Gói miễn phí có giới hạn và ngữ cảnh ngắn hơn (~64k).",
+    },
+    "NVIDIA NIM (miễn phí)": {
+        "kind": "openai",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "models": ["deepseek-ai/deepseek-v3.1"],
+        "free": True, "rpm": 35, "concurrency": 3,
+        "signup": "https://build.nvidia.com/settings/api-keys",
+        "note": "Hơn 100 model (DeepSeek, Qwen, Llama, Kimi…), giới hạn ~40 request/phút. Bấm “Lấy model” để xem đủ.",
+    },
+    "SiliconFlow (miễn phí)": {
+        "kind": "openai",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "models": ["Qwen/Qwen3-8B", "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", "THUDM/glm-4-9b-chat"],
+        "free": True, "rpm": 25, "concurrency": 2,
+        "signup": "https://cloud.siliconflow.cn",
+        "note": "Nền tảng Trung Quốc, model tiếng Trung tốt. Một số model miễn phí vĩnh viễn; đăng ký cần số điện thoại.",
+    },
+    "Zhipu GLM (miễn phí)": {
+        "kind": "openai",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "models": ["glm-4.7-flash", "glm-4.5-flash"],
+        "free": True, "rpm": 20, "concurrency": 1,
+        "signup": "https://open.bigmodel.cn",
+        "note": "GLM-Flash miễn phí nhưng chỉ chạy 1 request cùng lúc cho mỗi key.",
+    },
     "Tùy chỉnh (chuẩn OpenAI)": {
         "kind": "openai",
         "base_url": "",
@@ -114,6 +166,25 @@ class Provider:
         self.temperature = temperature
         self.session = requests.Session()
         self.label = self.model
+        # giới hạn riêng của key này (gói miễn phí): giãn cách request + số request chạy cùng lúc
+        self.min_interval = 0.0
+        self._sem: threading.Semaphore | None = None
+        self._gate = threading.Lock()
+        self._next_at = 0.0
+
+    def set_limits(self, rpm: int = 0, concurrency: int = 0):
+        self.min_interval = 60.0 / rpm if rpm else 0.0
+        self._sem = threading.BoundedSemaphore(concurrency) if concurrency else None
+
+    def _wait_turn(self):
+        if not self.min_interval:
+            return
+        with self._gate:
+            now = time.monotonic()
+            at = max(now, self._next_at)
+            self._next_at = at + self.min_interval
+        if at > now:
+            time.sleep(at - now)
 
     def chat(self, system: str, user: str) -> str:  # pragma: no cover
         raise NotImplementedError
@@ -147,11 +218,18 @@ class OpenAICompatible(Provider):
             ],
             "temperature": self.temperature,
         }
-        resp = self._post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
+        if self._sem:
+            self._sem.acquire()
+        try:
+            self._wait_turn()
+            resp = self._post(f"{self.base_url}/chat/completions", headers=self._headers(), json=body)
+        finally:
+            if self._sem:
+                self._sem.release()
         _raise_for(resp)
         data = resp.json()
         try:
-            return data["choices"][0]["message"]["content"] or ""
+            return strip_thinking(data["choices"][0]["message"]["content"] or "")
         except (KeyError, IndexError, TypeError):
             raise RetryableError(f"Phản hồi lạ: {str(data)[:300]}")
 
@@ -351,6 +429,7 @@ def make_provider(name: str, api_key: str, model: str, base_url: str | None = No
         raise ProviderError("Chưa nhập Base URL cho nhà cung cấp tùy chỉnh")
     cls = {"anthropic": AnthropicProvider, "vertex": VertexProvider}.get(cfg["kind"], OpenAICompatible)
     prov = cls(api_key, model, url)
+    prov.set_limits(cfg.get("rpm", 0), cfg.get("concurrency", 0))
     tail = api_key.strip()[-4:] if api_key.strip() else "----"
     prov.label = f"{name.split(' (')[0]} · {model} · key …{tail}"
     return prov

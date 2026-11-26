@@ -82,3 +82,18 @@ Các điểm kiểm tra **không** có lỗi: cache TTS (T3), đồng bộ tốc
 5. Bảng câu/nhân vật vẫn sửa được trong lúc worker chạy. Chưa thấy lỗi nhưng chưa khoá giao diện.
 6. Tab Xuất video chỉ tự nhận tiếng lồng 1x.
 7. Ở 2x, câu bị lùi để không chồng câu trước lệch tối đa 60 ms (T4@2.0). Đây là chủ ý, không phải lệch đồng bộ.
+
+## Nhánh nang-cap-ai-mien-phi (26/11/2026)
+
+Kết quả chạy thật trong máy Linux 2 nhân CPU, không có GPU (offscreen Qt, máy chủ AI giả lập thay cho nhà cung cấp thật):
+
+| Bộ kiểm thử | Kết quả |
+|---|---|
+| tests/qa_dubbing.py (hồi quy Lồng tiếng) | 26/26 PASS |
+| tests/test_free_providers.py (5 nhà miễn phí, giới hạn request, bỏ `<think>`) | 6/6 PASS |
+| tests/test_local_models.py (Qwen3-ASR giả lập + BS-RoFormer thật) | 7/7 PASS — R1: CPU, 61 s cho 4 s âm thanh (gồm nạp model); R2: dừng ngay, không còn tiến trình con |
+| tests/test_translation_quality.py (thuật ngữ + dịch kỹ) | 7/7 PASS |
+| tests/test_free_keys_dialog.py (Kết nối AI miễn phí) | 6/6 PASS |
+
+Ghi chú: BS-RoFormer trên CPU khoảng 10–15 lần thời lượng âm thanh; với card 2 GB VRAM nên dùng MDX-Net.
+Qwen3-ASR mới kiểm thử phần ghép câu/cửa sổ bằng model giả lập; chạy model thật cần máy người dùng.

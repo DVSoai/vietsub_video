@@ -7,7 +7,11 @@ python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://downloa
 python -m pip install "transformers==4.57.6" safetensors
 python -m pip install vieneu
 REM Model Hugging Face chay tren may: Whisper (nghe giong) + Qwen (dich), nen 4-bit cho card 8 GB
-python -m pip install accelerate bitsandbytes
+python -m pip install "accelerate==1.12.0" bitsandbytes
+REM Nghe giong tieng Trung tot nhat tren may: Qwen3-ASR + ForcedAligner (Apache-2.0)
+python -m pip install qwen-asr
+REM Tach giong chat luong cao: BS-RoFormer qua audio-separator (MIT)
+python -m pip install "audio-separator[gpu]"
 REM Tach giong chay tren card: thay onnxruntime CPU bang ban GPU
 python -m pip uninstall -y onnxruntime
 python -m pip install onnxruntime-gpu

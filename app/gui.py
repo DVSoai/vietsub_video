@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from . import srt, theme
 from .providers import PROVIDERS, ProviderError, make_provider, project_from_json
 from .transcribe import MEDIA_EXT, Transcriber, is_media
-from .translator import Settings, Stopped, Translator, needs_retranslation
+from .translator import Settings, Stopped, Translator, load_glossary, needs_retranslation
 
 VERTEX_LOCATIONS = ["global", "us-central1", "asia-southeast1", "asia-northeast1", "asia-east1",
                     "us-east4", "us-west1", "europe-west1", "europe-west4"]
@@ -293,7 +293,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Subtitle Translator")
         self.setWindowIcon(theme.app_icon())
         self.resize(1180, 860)
-        self.setMinimumSize(1000, 840)
+        # màn hình thấp (1366×768…): cửa sổ được nhỏ lại, nội dung từng tab tự cuộn thay vì bị ép
+        self.setMinimumSize(980, 560)
+        scr = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        if scr is not None:
+            self.resize(min(1180, scr.width() - 20), min(860, scr.height() - 30))
         PROMPTS.mkdir(parents=True, exist_ok=True)
         self.cfg = self._load_cfg()
         self.worker: Worker | None = None
@@ -352,7 +356,9 @@ class MainWindow(QMainWindow):
         khead = QHBoxLayout()
         self.lb_keys = QLabel("API KEY"); self.lb_keys.setObjectName("fieldLabel")
         self.btn_json = btn("Chọn file JSON…", "link", "Chọn file service account .json (chọn nhiều file = xoay vòng)")
-        khead.addWidget(self.lb_keys); khead.addStretch(1); khead.addWidget(self.btn_json)
+        self.lb_free = QLabel(); self.lb_free.setObjectName("hint")
+        self.lb_free.setOpenExternalLinks(True); self.lb_free.setTextFormat(Qt.RichText)
+        khead.addWidget(self.lb_keys); khead.addStretch(1); khead.addWidget(self.lb_free); khead.addWidget(self.btn_json)
         kv.addLayout(khead); kv.addWidget(self.ed_keys)
         # Vertex service account: Project ID + Location
         self.sa_wrap = QWidget()
@@ -364,7 +370,10 @@ class MainWindow(QMainWindow):
         sw.addLayout(field("Location", self.cb_location), 2)
         v1.addLayout(kv)
         v1.addWidget(self.sa_wrap)
-        trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_test)
+        self.btn_free = btn("✨ AI miễn phí…", "ghost", "Lấy key miễn phí một lần (Groq, Cerebras, NVIDIA, SiliconFlow, "
+                            "Zhipu, Gemini, OpenRouter) — app tự nhận, tự kiểm tra, tự bật")
+        trow = QHBoxLayout(); trow.addWidget(self.chk_use); trow.addStretch(1); trow.addWidget(self.btn_free)
+        trow.addWidget(self.btn_test)
         v1.addLayout(trow)
         v1.addWidget(self.lb_using)
         v1.addStretch(1)
@@ -414,6 +423,15 @@ class MainWindow(QMainWindow):
         v2.addLayout(lrow)
         v2.addLayout(field("Prompt riêng cho phim", prow,
                            "Tên nhân vật, xưng hô, giữ từ Hán Việt… — dòng bắt đầu bằng # là ghi chú"))
+        self.lb_gloss = QLabel("Chọn phụ đề để dùng bảng thuật ngữ của thư mục phim")
+        self.lb_gloss.setObjectName("hint")
+        self.btn_gloss = btn("Bảng thuật ngữ…", "link", "Tên nhân vật, chiêu thức, địa danh… dịch thống nhất cả bộ phim")
+        self.chk_refine = QCheckBox("Dịch kỹ (thêm lượt biên tập)")
+        self.chk_refine.setToolTip("Mỗi batch gửi thêm 1 lần: AI rà lại bản dịch, sửa sai ý/xưng hô/thuật ngữ và viết "
+                                   "lại cho tự nhiên. Tốn gấp đôi lượt gọi.")
+        grow = QHBoxLayout(); grow.setSpacing(8)
+        grow.addWidget(self.lb_gloss, 1); grow.addWidget(self.btn_gloss); grow.addWidget(self.chk_refine)
+        v2.addLayout(field("Thuật ngữ cả bộ phim", grow))
 
         # ===== thẻ 3: Tốc độ
         c3, v3 = card("Tốc độ", "3")
@@ -536,13 +554,13 @@ class MainWindow(QMainWindow):
         from .search_page import SearchPage
         self.search_page = SearchPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers)
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.search_page)   # 0 · Tìm & tải phim
-        self.stack.addWidget(page1)              # 1 · Dịch phụ đề
+        self.stack.addWidget(self._scroll(self.search_page))   # 0 · Tìm & tải phim
+        self.stack.addWidget(self._scroll(page1))              # 1 · Dịch phụ đề
         from .dub_page import DubPage
         self.dub_page = DubPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers,
                                 lambda: self.ed_output.text().strip(), lambda: self.render_page)
-        self.stack.addWidget(self.dub_page)      # 2 · Lồng tiếng
-        self.stack.addWidget(self.render_page)   # 3 · Xuất video Vietsub
+        self.stack.addWidget(self._scroll(self.dub_page))      # 2 · Lồng tiếng
+        self.stack.addWidget(self._scroll(self.render_page))   # 3 · Xuất video Vietsub
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -560,9 +578,11 @@ class MainWindow(QMainWindow):
         self.btn_output.clicked.connect(self._pick_output)
         self.btn_swap.clicked.connect(self._swap_langs)
         self.btn_upload_prompt.clicked.connect(self._upload_prompt)
+        self.btn_gloss.clicked.connect(self._open_gloss)
         self.btn_edit_prompt.clicked.connect(self._edit_prompt)
         self.btn_del_prompt.clicked.connect(self._delete_prompt)
         self.btn_test.clicked.connect(self._test_conn)
+        self.btn_free.clicked.connect(self.open_free_keys)
         self.btn_run.clicked.connect(lambda: self._start("translate"))
         self.btn_fix.clicked.connect(lambda: self._start("fix"))
         self.btn_stop.clicked.connect(self._stop)
@@ -602,6 +622,7 @@ class MainWindow(QMainWindow):
         self.sp_threads.setValue(c.get("threads", 10))
         self.sp_rpm.setValue(c.get("rpm", 0))
         self.sp_batch.setValue(c.get("batch", 40))
+        self.chk_refine.setChecked(c.get("refine", False))
         self.cb_target.setCurrentText(c.get("target", "Tiếng Việt"))
         self.cb_source.setCurrentText(c.get("source", "Tiếng Trung"))
         self._set_detail(bool(c.get("detail", False)), resize=False)
@@ -615,6 +636,18 @@ class MainWindow(QMainWindow):
         if PROVIDERS[name]["kind"] == "vertex_sa":
             pc["project"] = self.ed_project.text().strip()
             pc["location"] = self.cb_location.currentText().strip() or "global"
+
+    @staticmethod
+    def _scroll(page: QWidget) -> QWidget:
+        """Bọc trang trong vùng cuộn: đủ chỗ thì giãn hết, thiếu chỗ thì cuộn chứ không đè lên nhau."""
+        from PySide6.QtWidgets import QScrollArea
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setObjectName("pageScroll")
+        sa.setStyleSheet("QScrollArea#pageScroll, QScrollArea#pageScroll > QWidget > QWidget { background: transparent; }")
+        sa.setWidget(page)
+        return sa
 
     def _go_page(self, i: int):
         self.stack.setCurrentIndex(i)
@@ -646,6 +679,7 @@ class MainWindow(QMainWindow):
             threads=self.sp_threads.value(), rpm=self.sp_rpm.value(), batch=self.sp_batch.value(),
             target=self.cb_target.currentText(), source=self.cb_source.currentText(),
             prompt=self.cb_prompt.currentText(), detail=self.detail.isVisible(),
+            refine=self.chk_refine.isChecked(),
         )
         DATA.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(json.dumps(self.cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -680,6 +714,11 @@ class MainWindow(QMainWindow):
             "Tài khoản free chỉ có ít lượt mỗi tháng" if name.startswith("Hugging Face") else
             "Dán API key…\nNhiều key: mỗi dòng một key, app sẽ xoay vòng")
         self.ed_keys.setEnabled(not local)
+        if p.get("free"):
+            self.lb_free.setText(f'<a href="{p["signup"]}" style="color:#2fd9ab">Lấy key miễn phí ↗</a>')
+            self.lb_free.setToolTip(p.get("note", ""))
+            self.ed_keys.setPlaceholderText(f"Dán API key miễn phí…\n{p.get('note', '')}")
+        self.lb_free.setVisible(bool(p.get("free")))
         self.lb_keys.setText("FILE SERVICE ACCOUNT (.JSON)" if sa else ("KHÔNG CẦN KEY" if local else
                              ("TOKEN HUGGING FACE" if name.startswith("Hugging Face") else "API KEY")))
         self.ed_project.setText(pc.get("project", ""))
@@ -705,6 +744,31 @@ class MainWindow(QMainWindow):
             self.files = files
             self.cfg["last_dir"] = str(Path(files[0]).parent)
             self.drop.set_files(files)
+        self._refresh_gloss()
+
+    # ---------- bảng thuật ngữ (dùng chung theo thư mục phim)
+    def _gloss_path(self) -> str:
+        from .glossary_dialog import glossary_path
+        return glossary_path(str(Path(self.files[0]).parent)) if self.files else ""
+
+    def _refresh_gloss(self):
+        from .glossary_dialog import read_terms
+        p = self._gloss_path()
+        if not p:
+            self.lb_gloss.setText("Chọn phụ đề để dùng bảng thuật ngữ của thư mục phim")
+            return
+        n = len(read_terms(p))
+        self.lb_gloss.setText(f"✔ {n} thuật ngữ — dùng cho cả thư mục" if n else "Chưa có — bấm “Bảng thuật ngữ…”, AI lập giúp")
+
+    def _open_gloss(self):
+        from .glossary_dialog import GlossaryDialog
+        if not self.files:
+            return QMessageBox.information(self, "Chưa chọn phụ đề", "Kéo thả file phụ đề (hoặc video) của bộ phim trước.")
+        srts = [f for f in self.files if f.lower().endswith(".srt")]
+        dlg = GlossaryDialog(self._gloss_path(), srts, self._make_translate_providers,
+                             self.cb_source.currentText(), self.cb_target.currentText(), self)
+        dlg.exec()
+        self._refresh_gloss()
 
     def _pick_output(self):
         d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu", self.ed_output.text())
@@ -866,6 +930,21 @@ class MainWindow(QMainWindow):
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
 
+    def open_free_keys(self):
+        """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
+        from .free_keys_dialog import FreeKeysDialog
+        cur = self.cb_provider.currentText()
+        self._save_provider_state(cur)            # ghi lại ô đang sửa trước khi hộp thoại đổi cfg
+        dlg = FreeKeysDialog(self.cfg, self)
+        dlg.exec()
+        if dlg.changed:
+            self._current_provider = None          # nạp lại ô key của nhà cung cấp đang chọn từ cfg
+            self._on_provider(cur)
+            self._save_cfg()
+            n = sum(1 for pc in self.cfg.get("per_provider", {}).values() if pc.get("enabled") and pc.get("keys"))
+            self._log(f"✔ Đã bật nhà cung cấp miễn phí. Đang dùng {n} nhà, hết lượt nhà này sẽ tự sang nhà khác.")
+        self._refresh_using()
+
     def _test_conn(self):
         try:
             prov = self._make_providers()[0]
@@ -894,7 +973,11 @@ class MainWindow(QMainWindow):
             source_lang=self.cb_source.currentText(), target_lang=self.cb_target.currentText(),
             threads=self.sp_threads.value(), batch_size=self.sp_batch.value(),
             rpm=self.sp_rpm.value(), custom_prompt=self._prompt_text(),
+            glossary=load_glossary(self._gloss_path()) if self.files else None,
+            refine=self.chk_refine.isChecked(),
         )
+        if settings.glossary:
+            self._log(f"Bảng thuật ngữ: {len(settings.glossary)} mục")
         names = sorted({p.label.split(" · ")[0] for p in providers})
         self._log(f"Nguồn dịch: {', '.join(names)} — tổng {len(providers)} key")
         self.worker = Worker(mode, list(self.files), self.ed_output.text().strip(), providers, settings,

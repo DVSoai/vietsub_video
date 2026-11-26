@@ -74,12 +74,15 @@ class DubWorker(QThread):
             provs, prov_err = page.providers(), ""
         except Exception as e:  # noqa: BLE001  (chưa cấu hình AI: chỉ lỗi khi thật sự cần)
             provs, prov_err = [], str(e)
+        from .glossary_dialog import glossary_path
+        from .translator import load_glossary
         self.o = {"providers": provs, "prov_err": prov_err, "asr": page.cfg.get("asr", ""),
+                  "glossary": load_glossary(glossary_path(os.path.dirname(page.video))) if page.video else {},
                   "zh_srt": page.find_srt(page.src_code), "audio": page.dub_audio_path(),
                   "video_out": page.dub_video_path(),
                   "remove": page.rb_remove.isChecked(), "retr": page.chk_retr.isChecked(),
                   "skip_review": page.chk_skip_review.isChecked(), "export": page.chk_export.isChecked(),
-                  "mix": page.mix_options(), "hints": page.hints(), "vis": page.visual_settings()}
+                  "mix": page.mix_options(), "hints": page.hints(), "sep_model": page.cb_sep.currentData(), "vis": page.visual_settings()}
 
     def _providers(self):
         if not self.o["providers"]:
@@ -91,14 +94,25 @@ class DubWorker(QThread):
     def _sep(self):
         p = self.p
         inst, voc = os.path.join(p.workdir, "instrumental.wav"), os.path.join(p.workdir, "vocals.wav")
-        if os.path.exists(inst) and os.path.exists(voc):
+        mark = os.path.join(p.workdir, "sep_model.txt")
+        want = self.o["sep_model"]
+        done_with = open(mark, encoding="utf-8").read().strip() if os.path.exists(mark) else "mdx"
+        if os.path.exists(inst) and os.path.exists(voc) and done_with == want:
             self.log.emit("  Đã có nhạc nền/giọng tách sẵn, dùng lại")
             return
-        from .vocal import separate_file
         self.stage.emit("sep", "Đang tách giọng nói khỏi nhạc nền…")
         t0 = time.monotonic()
-        dev = separate_file(p.video, inst, voc, log=self.log.emit,
-                            progress=lambda d, t: self.progress.emit(d, t), stop=self.stop_event)
+        if want == "roformer":
+            from .roformer import separate_file as sep_roformer
+            from .vocal import models_dir
+            dev = sep_roformer(p.video, inst, voc, str(models_dir()), log=self.log.emit,
+                               progress=lambda d, t: self.progress.emit(d, t), stop=self.stop_event)
+        else:
+            from .vocal import separate_file
+            dev = separate_file(p.video, inst, voc, log=self.log.emit,
+                                progress=lambda d, t: self.progress.emit(d, t), stop=self.stop_event)
+        with open(mark, "w", encoding="utf-8") as f:
+            f.write(want)
         self.log.emit(f"  ✔ Tách giọng xong ({dev}, {_fmt(time.monotonic() - t0)})")
 
     def _asr(self) -> str:
@@ -138,7 +152,9 @@ class DubWorker(QThread):
         from .dub import ts_seconds
         durs = {str(c.index): max(0.6, ts_seconds(c.end) - ts_seconds(c.start)) for c in cues}
         st = Settings(source_lang=p.src_lang, target_lang="Tiếng Việt", threads=6, batch_size=25,
-                      custom_prompt=self.o['hints'], dub_durations=durs)
+                      custom_prompt=self.o['hints'], dub_durations=durs, glossary=self.o["glossary"] or None)
+        if st.glossary:
+            self.log.emit(f"  Dùng bảng thuật ngữ: {len(st.glossary)} mục")
         tr = Translator(self._providers(), st, self.stop_event)
         tr.cb.log = self.log.emit
         tr.cb.progress = self.progress.emit
@@ -483,6 +499,13 @@ class DubPage(QWidget):
         def srow(sl, lb):
             r = QHBoxLayout(); r.addWidget(sl, 1); r.addWidget(lb); return r
         v2.addWidget(self.rb_remove); v2.addWidget(self.rb_duck)
+        self.cb_sep = QComboBox()
+        self.cb_sep.addItem("MDX-Net (nhanh, nhẹ)", "mdx")
+        self.cb_sep.addItem("BS-RoFormer (sạch hơn, cần card ≥4 GB)", "roformer")
+        self.cb_sep.setToolTip("Model AI tách lời thoại khỏi nhạc nền. BS-RoFormer tách sạch hơn nhưng tải ~640 MB "
+                               "và rất nặng: cần card NVIDIA từ 4 GB VRAM. Chạy bằng CPU hay card 2 GB "
+                               "có thể mất hàng chục phút cho mỗi phút phim — khi đó hãy dùng MDX-Net.")
+        v2.addLayout(_field("Tách giọng bằng", self.cb_sep))
         self.duck_wrap = QWidget(); dw = QVBoxLayout(self.duck_wrap); dw.setContentsMargins(0, 0, 0, 0)
         dw.addLayout(_field("Tiếng gốc khi có thoại", srow(self.sl_duck, self.lb_duck)))
         v2.addWidget(self.duck_wrap)
@@ -504,6 +527,10 @@ class DubPage(QWidget):
         self.chk_export.setChecked(True)
         v3.addLayout(_field("Gợi ý tên riêng", self.ed_hints))
         v3.addWidget(self.chk_retr); v3.addWidget(self.chk_skip_review); v3.addWidget(self.chk_export)
+        self.btn_free_ai = _btn("✨ Kết nối AI miễn phí (không tốn tiền)…", "link",
+                                "Nghe giọng/dịch/nhận diện nhân vật cần AI: lấy key miễn phí một lần, app tự bật")
+        self.btn_free_ai.clicked.connect(lambda: self.window().open_free_keys() if hasattr(self.window(), "open_free_keys") else None)
+        v3.addWidget(self.btn_free_ai)
         self.lb_engine = QLabel("VieNeu-TTS: chưa nạp"); self.lb_engine.setObjectName("hint"); self.lb_engine.setWordWrap(True)
         v3.addWidget(self.lb_engine)
 
@@ -654,6 +681,7 @@ class DubPage(QWidget):
         self.sl_duck.setValue(st.get("duck", 20)); self.sl_voice.setValue(st.get("voice", 100))
         self.sl_bg.setValue(st.get("bg", 90)); self.sp_speed.setValue(st.get("speed", 1.35))
         self.sp_vspeed.setValue(st.get("vspeed", 1.0))
+        self.cb_sep.setCurrentIndex(max(0, self.cb_sep.findData(st.get("sep", "mdx"))))
         self.cb_cover.setCurrentIndex(st.get("cover", 0)); self.cover_wrap.setVisible(st.get("cover", 0) != 0)
         self.sp_cy.setValue(st.get("cy", 80)); self.sp_ch.setValue(st.get("ch", 12)); self.sp_cx.setValue(st.get("cx", 5))
         self.chk_subs.setChecked(st.get("subs", False))
@@ -663,7 +691,7 @@ class DubPage(QWidget):
 
     def store_state(self):
         self.cfg["dub"] = {"remove": self.rb_remove.isChecked(), "duck": self.sl_duck.value(),
-                           "voice": self.sl_voice.value(), "bg": self.sl_bg.value(), "speed": self.sp_speed.value(), "vspeed": self.sp_vspeed.value(),
+                           "voice": self.sl_voice.value(), "bg": self.sl_bg.value(), "speed": self.sp_speed.value(), "vspeed": self.sp_vspeed.value(), "sep": self.cb_sep.currentData(),
                            "cover": self.cb_cover.currentIndex(), "cy": self.sp_cy.value(), "ch": self.sp_ch.value(),
                            "cx": self.sp_cx.value(), "subs": self.chk_subs.isChecked(),
                            "aspect": self.cb_aspect.currentData() or "", "logo": self.ed_logo.text().strip(),
