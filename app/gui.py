@@ -323,7 +323,7 @@ class MainWindow(QMainWindow):
         nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
         self.nav_group = QButtonGroup(self)
         self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub", "5 · Quản lý AI")):
+        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub", "5 · Quản lý AI", "6 · Cắt video")):
             b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
@@ -594,6 +594,9 @@ class MainWindow(QMainWindow):
         ai_layout.addWidget(ai_card)
         ai_layout.addStretch(1)
         self.stack.addWidget(self._scroll(self.ai_page))
+        from .split_page import SplitPage
+        self.split_page = SplitPage()
+        self.stack.addWidget(self._scroll(self.split_page))
         self.stack.setCurrentIndex(1)
         v.addLayout(header)
         v.addWidget(self.stack, 1)
@@ -1308,6 +1311,9 @@ class MainWindow(QMainWindow):
             self.log_box.appendHtml(f'<span style="color:{color}; font-weight:{weight}">{safe}</span>')
 
     def closeEvent(self, e):
+        if self.split_page.busy() and QMessageBox.question(self, "Cắt video", "Dừng cắt video và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
         if self.render_page.busy() and QMessageBox.question(
                 self, "Đang xuất video", "Đang xuất video. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
@@ -1320,6 +1326,7 @@ class MainWindow(QMainWindow):
                 self, "Đang lồng tiếng", "Đang lồng tiếng. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
+        self.split_page.shutdown()
         self.render_page.shutdown()
         self.search_page.shutdown()
         self.dub_page.shutdown()
