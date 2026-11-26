@@ -143,7 +143,45 @@ class FreeKeysDialog(QDialog):
     def _open_provider(self, name, url):
         # Explicit user action; never automate login or read browser credentials.
         self.rows[name]["st"].setText("Tạo key trên trang chính thức, sau đó dán vào ô key.")
-        QDesktopServices.openUrl(QUrl(url))
+        if name != "Groq (miễn phí)":
+            QDesktopServices.openUrl(QUrl(url))
+            return
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            QDesktopServices.openUrl(QUrl(url))
+            return
+        browser = QDialog(self)
+        browser.setWindowTitle("Groq Console")
+        browser.resize(1050, 720)
+        layout = QVBoxLayout(browser)
+        hint = QLabel("Đăng nhập, tạo key và bấm Copy trên Groq; sau đó bấm Nhận key.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        view = QWebEngineView(browser)
+        layout.addWidget(view, 1)
+        actions = QHBoxLayout()
+        external = QPushButton("Mở trình duyệt hệ thống")
+        external.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        receive = QPushButton("Nhận key đã sao chép")
+        def receive_key():
+            key = QGuiApplication.clipboard().text().strip()
+            if guess_provider(key) != name:
+                hint.setText("Clipboard chưa có API key Groq hợp lệ.")
+                return
+            if not self.rows[name]["btn"].isEnabled():
+                hint.setText("Đang kiểm tra key trước đó.")
+                return
+            self.rows[name]["ed"].setText(key)
+            browser.accept()
+            self._check(name)
+        receive.clicked.connect(receive_key)
+        actions.addWidget(external)
+        actions.addWidget(receive)
+        layout.addLayout(actions)
+        view.setUrl(QUrl(url))
+        browser.exec()
+        browser.deleteLater()
 
     # ---- clipboard
     def _poll_clipboard(self):
