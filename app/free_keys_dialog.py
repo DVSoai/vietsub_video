@@ -7,6 +7,7 @@ cung cấp theo tiền tố key, thử gọi 1 lần, lưu và bật lên. Model
 from __future__ import annotations
 
 import re
+import requests
 
 from PySide6.QtCore import QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -50,11 +51,24 @@ class _Check(QThread):
 
     def run(self):
         try:
+            if self.name == "Groq (miễn phí)":
+                response = requests.get("https://api.groq.com/openai/v1/models",
+                                        headers={"Authorization": "Bearer " + self.key},
+                                        timeout=15, allow_redirects=False)
+                if response.status_code != 200:
+                    self.done.emit(self.name, "", f"Groq HTTP {response.status_code}")
+                    return
+                models = {m.get("id") for m in response.json().get("data", [])}
+                if self.model not in models:
+                    self.done.emit(self.name, "", "Model đã chọn không có trong danh sách Groq")
+                    return
+                self.done.emit(self.name, "API key và model hợp lệ", "")
+                return
             p = make_provider(self.name, self.key, self.model)
             r = p.chat("Trả lời đúng một từ tiếng Việt.", "Dịch: 你好")
             self.done.emit(self.name, (r or "").strip()[:40] or "OK", "")
         except Exception as e:  # noqa: BLE001
-            self.done.emit(self.name, "", str(e)[:200])
+            self.done.emit(self.name, "", f"Không thể kiểm tra kết nối ({type(e).__name__})")
 
 
 class FreeKeysDialog(QDialog):
@@ -87,7 +101,7 @@ class FreeKeysDialog(QDialog):
             b_open = QPushButton("Mở trang lấy key"); b_open.setObjectName("ghost")
             b_check = QPushButton("Kiểm tra && bật"); b_check.setObjectName("ghost")
             st = QLabel(self._status_text(name)); st.setObjectName("hint"); st.setMinimumWidth(170); st.setWordWrap(True)
-            b_open.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+            b_open.clicked.connect(lambda _=False, u=url, n=name: self._open_provider(n, u))
             b_check.clicked.connect(lambda _=False, n=name: self._check(n))
             ed.returnPressed.connect(lambda n=name: self._check(n))
             grid.addWidget(title, r, 0); grid.addWidget(ed, r, 1); grid.addWidget(b_open, r, 2)
@@ -125,6 +139,11 @@ class FreeKeysDialog(QDialog):
         if self._keys(name):
             return "đã có key (đang tắt)"
         return "chưa có key"
+
+    def _open_provider(self, name, url):
+        # Explicit user action; never automate login or read browser credentials.
+        self.rows[name]["st"].setText("Tạo key trên trang chính thức, sau đó dán vào ô key.")
+        QDesktopServices.openUrl(QUrl(url))
 
     # ---- clipboard
     def _poll_clipboard(self):
@@ -180,10 +199,11 @@ class FreeKeysDialog(QDialog):
         pc["enabled"] = True
         pc["model"] = model
         self.changed = True
-        row["st"].setText(f"✔ đang dùng — trả lời: {result}")
+        row["st"].setText(f"✔ đang dùng — {result}")
 
     def done(self, r):
         self._clip_timer.stop()
-        for j in self._jobs:
-            j.wait(15000)
+        if any(j.isRunning() for j in self._jobs):
+            self._clip_timer.start(700)
+            return
         super().done(r)
