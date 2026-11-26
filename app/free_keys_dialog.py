@@ -13,7 +13,7 @@ from PySide6.QtCore import QThread, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QScrollArea, QVBoxLayout, QWidget, QMessageBox,
 )
 
 from .providers import PROVIDERS, make_provider
@@ -172,6 +172,7 @@ class FreeKeysDialog(QDialog):
             if not self.rows[name]["btn"].isEnabled():
                 hint.setText("Đang kiểm tra key trước đó.")
                 return
+            self._clip_last = key
             self.rows[name]["ed"].setText(key)
             browser.accept()
             self._check(name)
@@ -215,6 +216,7 @@ class FreeKeysDialog(QDialog):
         self.rows[name]["st"].setText("đang thử gọi…")
         job = _Check(name, key, model)
         job.done.connect(self._checked)
+        self._jobs = [j for j in self._jobs if not j.isFinished()]
         self._jobs.append(job)
         job.start()
 
@@ -240,8 +242,8 @@ class FreeKeysDialog(QDialog):
         row["st"].setText(f"✔ đang dùng — {result}")
 
     def done(self, r):
-        self._clip_timer.stop()
         if any(j.isRunning() for j in self._jobs):
-            self._clip_timer.start(700)
+            QMessageBox.information(self, "Đang kiểm tra", "Vui lòng chờ kiểm tra kết nối hoàn tất.")
             return
+        self._clip_timer.stop()
         super().done(r)
