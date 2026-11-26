@@ -106,8 +106,9 @@ ok2 = bad_txt.startswith("✖") and "gsk_bad" not in cfg[ "per_provider"][GROQ].
 cfg["per_provider"][GROQ]["model"] = "model-khong-ton-tai"
 r["ed"].setText("gsk_" + "H" * 40); d._check(GROQ)
 pump(8, lambda: r["btn"].isEnabled())
-ok3 = "không có" in r["st"].text() and "HHHH" not in cfg["per_provider"][GROQ].get("keys", "")
-rec("A1", "Groq: key đúng -> bật; key sai (401) -> không lưu; model không có -> không lưu", ok1 and ok2 and ok3,
+ok3 = r["st"].text().startswith("✔") and "tự chuyển" in r["st"].text() and \
+    cfg["per_provider"][GROQ].get("model") in PROVIDERS[GROQ]["models"]
+rec("A1", "Groq: key đúng -> bật; key sai (401) -> không lưu; model không có -> tự chuyển sang model còn chạy", ok1 and ok2 and ok3,
     f"đúng={ok1}, sai='{bad_txt}', model lạ='{r['st'].text()}'")
 
 # ---------------------------------------------------------------- A2/A3 đóng hộp thoại khi đang kiểm tra, hết giờ
@@ -177,7 +178,7 @@ dd = OUT / "ai_connect_cfg"
 shutil.rmtree(dd, ignore_errors=True)
 g.DATA = dd; g.PROMPTS = dd / "prompts"; g.CONFIG = dd / "settings.json"
 w = g.MainWindow(); w.resize(1366, 728); w.show()
-w.cfg.setdefault("per_provider", {})[GROQ] = {"keys": "gsk_" + "K" * 40, "enabled": True, "model": "llama-3.3-70b-versatile"}
+w.cfg.setdefault("per_provider", {})[GROQ] = {"keys": "gsk_" + "K" * 40, "enabled": True, "model": "openai/gpt-oss-120b"}
 w._current_provider = None; w._on_provider(w.cb_provider.currentText()); w._save_cfg()
 raw = g.CONFIG.read_text(encoding="utf-8")
 w.close(); pump(0.3)
@@ -211,7 +212,7 @@ w2.close(); pump(0.3)
 # ---------------------------------------------------------------- A8 file cấu hình không giải mã được
 bad = json.loads(raw)
 bad["refine"] = True
-bad.setdefault("per_provider", {})[GROQ] = {"keys_dpapi": "AAAA", "enabled": True, "model": "llama-3.3-70b-versatile"}
+bad.setdefault("per_provider", {})[GROQ] = {"keys_dpapi": "AAAA", "enabled": True, "model": "openai/gpt-oss-20b"}
 g.CONFIG.write_text(json.dumps(bad), encoding="utf-8")
 before = g.CONFIG.read_text(encoding="utf-8")
 BOXES.clear(); ANSWER["q"] = QMessageBox.No
@@ -223,7 +224,7 @@ rec("A8", "Key không giải mã được, chọn No: hỏi rõ tên nhà, KHÔN
 BOXES.clear(); ANSWER["q"] = QMessageBox.Yes
 w4 = g.MainWindow()
 pc4 = w4.cfg.get("per_provider", {}).get(GROQ, {})
-kept = w4.cfg.get("refine") is True and pc4.get("model") == "llama-3.3-70b-versatile"
+kept = w4.cfg.get("refine") is True and pc4.get("model") == "openai/gpt-oss-20b"
 w4._save_cfg(); w4.close(); pump(0.3)
 saved = json.loads(g.CONFIG.read_text(encoding="utf-8"))
 bak = g.CONFIG.with_name("settings.json.bak")

@@ -90,7 +90,7 @@ PROVIDERS: dict[str, dict] = {
     "Groq (miễn phí)": {
         "kind": "openai",
         "base_url": "https://api.groq.com/openai/v1",
-        "models": ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
+        "models": ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
         "free": True, "rpm": 25, "concurrency": 2,
         "signup": "https://console.groq.com/keys",
         "note": "Rất nhanh. Gói miễn phí giới hạn số request và token mỗi phút/ngày.",
@@ -413,9 +413,40 @@ class VertexSAProvider(VertexProvider):
         raise ProviderError("Hãy gõ tên model Gemini (vd: gemini-2.5-flash) vào ô Mô hình")
 
 
+# Model đã bị nhà cung cấp tắt -> model thay thế họ khuyên dùng (cấu hình cũ tự chuyển, không báo 404 nữa).
+# Groq: console.groq.com/docs/deprecations (Llama 3.x tắt 16/8/2026, Qwen3.6 27B tắt 14/9/2026).
+RETIRED = {
+    "Groq (miễn phí)": {
+        "llama-3.3-70b-versatile": "openai/gpt-oss-120b", "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b": "openai/gpt-oss-120b", "qwen/qwen3-32b": "openai/gpt-oss-120b",
+        "meta-llama/llama-4-scout-17b-16e-instruct": "openai/gpt-oss-120b",
+        "meta-llama/llama-4-maverick-17b-128e-instruct": "openai/gpt-oss-120b",
+        "moonshotai/kimi-k2-instruct-0905": "openai/gpt-oss-120b", "gemma2-9b-it": "openai/gpt-oss-20b",
+    },
+    "Cerebras (miễn phí)": {
+        "llama3.1-8b": "gpt-oss-120b", "llama-3.3-70b": "gpt-oss-120b", "zai-glm-4.7": "gpt-oss-120b",
+        "zai-glm-4.6": "gpt-oss-120b", "qwen-3-235b-a22b-instruct-2507": "gpt-oss-120b",
+    },
+}
+
+
+def current_model(name: str, model: str) -> str:
+    """Đổi model đã bị tắt sang model thay thế."""
+    return RETIRED.get(name, {}).get(model or "", model)
+
+
+def model_gone(err: Exception | str) -> bool:
+    """Lỗi kiểu “model không tồn tại / đã ngừng” (thử model khác), khác với lỗi key/hết lượt."""
+    t = str(err).lower()
+    return ("404" in t or "400" in t) and any(w in t for w in (
+        "does not exist", "not found", "model_not_found", "decommissioned", "deprecated", "no such model",
+        "not supported", "model not exist", "模型不存在"))
+
+
 def make_provider(name: str, api_key: str, model: str, base_url: str | None = None,
                   project: str = "", location: str = "") -> Provider:
     cfg = PROVIDERS[name]
+    model = current_model(name, model)
     if cfg["kind"] == "vertex_sa":
         prov = VertexSAProvider(api_key, model, (base_url or "").strip(), project, location)
         prov.label = f"Vertex AI · {model} · {prov.project}"

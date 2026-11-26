@@ -1,7 +1,7 @@
 name: windows-test
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
   workflow_dispatch:
 jobs:
@@ -45,6 +45,9 @@ jobs:
       - name: test_ai_connect (DPAPI that tren Windows)
         if: always()
         run: python tests/run_check.py tests/test_ai_connect.py
+      - name: test_retired_models (model bị nhà cung cấp tắt)
+        if: always()
+        run: python tests/run_check.py tests/test_retired_models.py
       - name: test_free_keys_dialog
         if: always()
         run: python tests/run_check.py tests/test_free_keys_dialog.py

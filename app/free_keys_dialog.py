@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QVBoxLayout, QWidget, QMessageBox,
 )
 
-from .providers import PROVIDERS, make_provider
+from .providers import PROVIDERS, ProviderError, current_model, make_provider, model_gone
 
 # tiền tố key để tự nhận ra nhà cung cấp khi người dùng bấm Copy trên trang
 KEY_PATTERNS = {
@@ -69,34 +69,56 @@ def friendly_error(e: Exception, key: str = "") -> str:
 
 
 class _Check(QThread):
-    done = Signal(str, str, str)       # tên, kết quả, lỗi
+    done = Signal(str, str, str, str)       # tên, kết quả, lỗi, model dùng được
 
     def __init__(self, name: str, key: str, model: str):
         super().__init__()
         self.name, self.key, self.model = name, key, model
 
+    def _available(self) -> set | None:
+        """Danh sách model nhà cung cấp trả về (None nếu không hỏi được). Key sai thì ném lỗi ngay."""
+        cfg = PROVIDERS[self.name]
+        if cfg.get("kind") != "openai" or not cfg.get("base_url"):
+            return None
+        try:
+            r = requests.get(cfg["base_url"].rstrip("/") + "/models", headers={"Authorization": "Bearer " + self.key},
+                             timeout=CHECK_TIMEOUT, allow_redirects=False)
+        except requests.RequestException:
+            return None
+        if r.status_code in (401, 403):
+            raise ProviderError(f"HTTP {r.status_code}")
+        if r.status_code != 200:
+            return None
+        try:
+            return {m.get("id") for m in r.json().get("data", []) if m.get("id")}
+        except ValueError:
+            return None
+
     def run(self):
         try:
-            if self.name == "Groq (miễn phí)":
-                base = PROVIDERS[self.name]["base_url"].rstrip("/")
-                response = requests.get(base + "/models",
-                                        headers={"Authorization": "Bearer " + self.key},
-                                        timeout=CHECK_TIMEOUT, allow_redirects=False)
-                if response.status_code != 200:
-                    self.done.emit(self.name, "", friendly_error(Exception(f"HTTP {response.status_code}")))
-                    return
-                models = {m.get("id") for m in response.json().get("data", [])}
-                if self.model not in models:
-                    self.done.emit(self.name, "", "Model đã chọn không có trong danh sách Groq")
-                    return
-                self.done.emit(self.name, "API key và model hợp lệ", "")
+            wanted = current_model(self.name, self.model)
+            cands = [m for m in dict.fromkeys([wanted] + list(PROVIDERS[self.name].get("models") or [])) if m]
+            avail = self._available()
+            if avail:
+                cands = [m for m in cands if m in avail] or cands   # danh sách có thể còn ghi model đã tắt
+            last = None
+            for m in cands[:4] or [""]:
+                p = make_provider(self.name, self.key, m)
+                p.timeout = CHECK_TIMEOUT
+                try:
+                    r = p.chat("Trả lời đúng một từ tiếng Việt.", "Dịch: 你好")
+                except Exception as e:  # noqa: BLE001
+                    if model_gone(e):
+                        last = e
+                        continue                                   # model đã tắt: thử model kế tiếp
+                    raise
+                note = "" if m == wanted else f" (model cũ {wanted} đã ngừng, tự chuyển)"
+                self.done.emit(self.name, f"model {m}{note} · trả lời: {(r or '').strip()[:30] or 'OK'}", "", m)
                 return
-            p = make_provider(self.name, self.key, self.model)
-            p.timeout = CHECK_TIMEOUT
-            r = p.chat("Trả lời đúng một từ tiếng Việt.", "Dịch: 你好")
-            self.done.emit(self.name, (r or "").strip()[:40] or "OK", "")
+            self.done.emit(self.name, "", "Key đúng nhưng không model nào dùng được: "
+                           + friendly_error(last or Exception("không có model"), self.key), "")
         except Exception as e:  # noqa: BLE001
-            self.done.emit(self.name, "", friendly_error(e, self.key))
+            self.done.emit(self.name, "", friendly_error(e, self.key), "")
 
 
 class FreeKeysDialog(QDialog):
@@ -237,7 +259,7 @@ class FreeKeysDialog(QDialog):
         if not key:
             self.rows[name]["st"].setText("chưa có key")
             return
-        model = self._pc(name).get("model") or (PROVIDERS[name]["models"] or [""])[0]
+        model = current_model(name, self._pc(name).get("model") or (PROVIDERS[name]["models"] or [""])[0])
         if not model:
             model = "openai/gpt-oss-20b:free" if name == "OpenRouter" else ""
         self.rows[name]["btn"].setEnabled(False)
@@ -251,12 +273,13 @@ class FreeKeysDialog(QDialog):
         self._jobs.append(job)
         job.start()
 
-    def _checked(self, name, result, err):
+    def _checked(self, name, result, err, used_model=""):
         row = self.rows[name]
         row["btn"].setEnabled(True)
         row["ed"].setEnabled(True)
         key = row.pop("pending_key", "")
-        model = row.pop("pending_model", "")
+        model = used_model or row.pop("pending_model", "")
+        row.pop("pending_model", None)
         if err:
             row["st"].setText(f"✖ {err}")
             return
