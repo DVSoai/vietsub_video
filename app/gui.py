@@ -1327,7 +1327,27 @@ class MainWindow(QMainWindow):
             self._save_cfg()
         except OSError:
             pass
+        self._leftover_threads = self._drain_threads(5.0)
         e.accept()
+
+    def _bg_threads(self):
+        """Mọi luồng nền đang được các trang giữ (đọc font, nạp giọng, tải model, kiểm tra key…)."""
+        from .free_keys_dialog import _ORPHANS
+        out = list(_ORPHANS)
+        for obj in (self, self.render_page, self.dub_page, self.search_page):
+            for v in list(vars(obj).values()):
+                if isinstance(v, QThread) and v not in out:
+                    out.append(v)
+        return out
+
+    def _drain_threads(self, seconds: float):
+        """Chờ luồng nền xong (tối đa `seconds`). Huỷ một QThread còn đang chạy làm Qt dừng cưỡng bức tiến trình
+        (Windows: 0xC0000409), nên luồng nào còn chạy thì trả về để lúc thoát bỏ qua bước dọn dẹp của Python."""
+        deadline = time.monotonic() + seconds
+        for t in self._bg_threads():
+            if t.isRunning():
+                t.wait(max(1, int((deadline - time.monotonic()) * 1000)))
+        return [t for t in self._bg_threads() if t.isRunning()]
 
 
 def _dark_title_bar(w):
@@ -1355,13 +1375,17 @@ def main():
     w.show()
     _dark_title_bar(w)
     code = app.exec()
-    teardown(app, w)
+    teardown(app, w, code)
     sys.exit(code)
 
 
-def teardown(app, w):
-    """Giải phóng cửa sổ rồi Qt trước khi Python thoát. Để Python tự dọn thì trên Windows tiến trình
-    thỉnh thoảng lỗi lúc thoát (0xC0000409) dù đã lưu xong — đo trên GitHub Actions: 3/6 lần lỗi, sau khi sửa 0/6."""
+def teardown(app, w, code: int = 0):
+    """Thoát gọn sau khi cửa sổ đã đóng (cài đặt đã lưu trong closeEvent).
+    Nếu còn luồng nền chưa xong (đã chờ 5 s), thoát thẳng để Python không huỷ QThread đang chạy."""
+    left = [t for t in getattr(w, "_leftover_threads", []) if t.isRunning()]
+    if left:
+        sys.stdout.flush(); sys.stderr.flush()
+        os._exit(code)
     try:
         w.deleteLater()
         app.processEvents()

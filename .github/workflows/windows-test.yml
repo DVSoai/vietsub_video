@@ -23,15 +23,25 @@ jobs:
           python -m pip install -r requirements.txt
           python -c "import sys, PySide6; print(sys.version, PySide6.__version__)"
           python -c "import PySide6.QtWebEngineWidgets; print('QtWebEngine OK')"
-      - name: Mo/dong app binh thuong
+      - name: Mo roi dong app ngay (12 lan)
         shell: cmd
         run: |
-          for /L %%i in (1,1,6) do (
-            python tests/win_close_check.py . dialog
-            call echo mo_dong_app lan %%i = %%ERRORLEVEL%%
-            if not errorlevel 0 exit /b 1
-            if errorlevel 1 exit /b 1
+          set FAIL=0
+          for /L %%i in (1,1,12) do (
+            python tests/win_close_check.py . plain >NUL 2>NUL && (echo mo_dong_app lan %%i: 0) || (echo mo_dong_app lan %%i: LOI & set FAIL=1)
           )
+          exit /b %FAIL%
+      - name: Dong app khi luong nen con chay (6 lan)
+        if: always()
+        shell: cmd
+        run: |
+          set FAIL=0
+          for /L %%i in (1,1,6) do (
+            python tests/test_close_while_busy.py > out.txt
+            type out.txt | findstr /C:"2/2 PASS" >NUL || set FAIL=1
+            type out.txt | findstr /B "["
+          )
+          exit /b %FAIL%
       - name: test_ai_connect (DPAPI that tren Windows)
         if: always()
         run: python tests/run_check.py tests/test_ai_connect.py
