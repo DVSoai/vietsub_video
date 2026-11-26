@@ -570,12 +570,26 @@ class MainWindow(QMainWindow):
         ai_body.addWidget(ai_intro)
         self.ai_status = QLabel(); self.ai_status.setWordWrap(True)
         ai_body.addWidget(self.ai_status)
+        self.ai_provider = QComboBox(); self.ai_provider.addItems(PROVIDERS.keys())
+        self.ai_model = QComboBox(); self.ai_model.setEditable(True)
+        self.ai_keys = QLineEdit(); self.ai_keys.setEchoMode(QLineEdit.Password)
+        self.ai_keys.setPlaceholderText("API key mới (để trống để giữ nguyên)")
+        self.ai_enabled = QCheckBox("Bật nhà cung cấp")
+        ai_body.addLayout(field("Nhà cung cấp", self.ai_provider))
+        ai_body.addLayout(field("Model", self.ai_model))
+        ai_body.addLayout(field("API key", self.ai_keys))
+        ai_body.addWidget(self.ai_enabled)
+        ai_actions = QHBoxLayout()
+        ai_save = btn("Lưu cấu hình", "ghost")
+        ai_save.clicked.connect(self._save_ai_editor)
+        ai_remove = btn("Xóa toàn bộ key", "ghost")
+        ai_remove.clicked.connect(self._remove_ai_keys)
         ai_connect = btn("Kết nối nhà cung cấp AI", "ghost")
         ai_connect.clicked.connect(self.open_free_keys)
-        ai_body.addWidget(ai_connect)
-        ai_settings = btn("Chọn model và cấu hình nâng cao", "ghost")
-        ai_settings.clicked.connect(lambda: self._go_page(1))
-        ai_body.addWidget(ai_settings)
+        for action in (ai_save, ai_remove, ai_connect):
+            ai_actions.addWidget(action)
+        ai_body.addLayout(ai_actions)
+        self.ai_provider.currentTextChanged.connect(self._load_ai_editor)
         ai_layout.addWidget(ai_card)
         ai_layout.addStretch(1)
         self.stack.addWidget(self._scroll(self.ai_page))
@@ -966,6 +980,42 @@ class MainWindow(QMainWindow):
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
 
+    def _load_ai_editor(self, name):
+        pc = self.cfg.get("per_provider", {}).get(name, {})
+        self.ai_model.clear()
+        self.ai_model.addItems(pc.get("models_cache") or PROVIDERS[name]["models"])
+        self.ai_model.setCurrentText(pc.get("model") or self.ai_model.currentText())
+        self.ai_keys.clear()
+        self.ai_enabled.setChecked(bool(pc.get("enabled")))
+        self.ai_keys.setEnabled(PROVIDERS[name]["kind"] not in ("hf_local", "vertex_sa"))
+
+    def _save_ai_editor(self):
+        name = self.ai_provider.currentText()
+        self._save_provider_state(self.cb_provider.currentText())
+        pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
+        key = self.ai_keys.text().strip()
+        if key and self.ai_keys.isEnabled():
+            pc["keys"] = key
+        pc["model"] = self.ai_model.currentText().strip()
+        pc["enabled"] = self.ai_enabled.isChecked()
+        self._current_provider = None
+        self._on_provider(self.cb_provider.currentText())
+        self._save_cfg()
+        self._refresh_ai_page()
+
+    def _remove_ai_keys(self):
+        name = self.ai_provider.currentText()
+        if QMessageBox.question(self, "Xóa key", f"Xóa toàn bộ key của {name} trên máy?") != QMessageBox.Yes:
+            return
+        self._save_provider_state(self.cb_provider.currentText())
+        pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
+        pc["keys"] = ""
+        pc["enabled"] = False
+        self._current_provider = None
+        self._on_provider(self.cb_provider.currentText())
+        self._save_cfg()
+        self._refresh_ai_page()
+
     def _refresh_ai_page(self):
         self._save_provider_state(self.cb_provider.currentText())
         rows = []
@@ -977,6 +1027,7 @@ class MainWindow(QMainWindow):
                 status = "Chạy cục bộ — không cần key"
             rows.append(f"{name}: {status}")
         self.ai_status.setText("\n".join(rows))
+        self._load_ai_editor(self.ai_provider.currentText())
 
     def open_free_keys(self):
         """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
