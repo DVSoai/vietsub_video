@@ -24,7 +24,7 @@ Mọi thứ chạy trên máy người dùng. AI từ xa (Gemini/Vertex hoặc n
 | `app/transcribe.py` | Nghe giọng thành phụ đề: Gemini/Vertex (kèm người nói, giới tính, cảm xúc) hoặc Whisper trên máy. Chia đoạn theo khoảng lặng, ghép lại không chồng thời gian. |
 | `app/translator.py` | Dịch theo batch JSON; chế độ lồng tiếng thêm thời lượng `⟪2.4s⟫` vào từng câu để AI dịch vừa thời gian nói. |
 | `app/render.py` | Bộ xuất hình (`Exporter`), xem trước 1 khung (`preview_frame`), dựng filter graph ffmpeg (`filter_graph`, `look_pre`, `look_post`, `audio_graph`), dữ liệu `Cover`, `Look`, `ExportOpts`, `SubStyle`. |
-| `app/region_dialog.py` | Hộp thoại "Chỉnh sửa vùng hình ảnh": kéo chuột tạo/di chuyển/đổi cỡ vùng trên khung hình gốc (đã bỏ viền đen), thanh thời gian, xem kết quả thật bằng `preview_frame`. |
+| `app/region_dialog.py` | Hộp thoại "Chỉnh sửa vùng hình ảnh": `RegionCanvas` (kéo tạo vùng theo 4 hướng, di chuyển có chặn mép, đổi cỡ từ 4 cạnh + 4 góc, bỏ qua viền đen, khoá khi đang xem kết quả), danh sách + thuộc tính vùng, 3 chế độ xem: khung gốc / chỉ xử lý vùng / thành phẩm. |
 | `app/render_page.py` | Tab Xuất video Vietsub. Tab Lồng tiếng mượn `_style()`, `_look()`, `_opts()` của trang này (kiểu chữ, màu, phóng to, lật, nhạc nền, bộ mã hoá). |
 | `app/gui.py` | Cửa sổ chính, điều hướng tab, tạo nhà cung cấp AI (`_make_translate_providers`), đồng bộ vùng che khi quay từ tab 4 về tab 3. |
 
@@ -181,6 +181,18 @@ Gọi tốc độ video là `s`.
 
 Che chữ đứng **trước** phóng to/lật, để vùng đã căn không lệch khi đổi phóng to (kiểm thử T9b). `preview_frame` dùng cùng `filter_graph`, chỉ bỏ tốc độ và mờ dần vì chỉ vẽ 1 khung (T8: PSNR ≥ 45 dB so với khung trong video xuất).
 
+## 8b. Hộp thoại vùng chỉnh sửa: luồng xem trước và tài nguyên
+
+- **Một worker duy nhất.** `_request()` chỉ ghi lại yêu cầu mới nhất (`_pending`). Nếu đang có `_PreviewWorker` chạy, app bật `cancel` của nó: `_run_cancellable` (render.py) kill ffmpeg trong ≤0,1 s. Khi worker kết thúc (`finished`), yêu cầu đang chờ mới được chạy. Tua liên tục 60 lần thì chỉ ~18 lần chạy thật, không bao giờ có 2 ffmpeg cùng lúc (T15).
+- **Ảnh tạm.** Thư mục `st_region_*` riêng cho mỗi lần mở. Sau mỗi kết quả, `_sweep()` xoá mọi ảnh trừ ảnh đang hiển thị, kể cả ảnh dở dang của ffmpeg bị dừng.
+- **Đóng hộp thoại** (Lưu, Huỷ, nút X): `shutdown()` dừng timer, bỏ yêu cầu chờ, huỷ worker, `wait()` cho luồng xong rồi mới `rmtree` thư mục tạm. Không còn cảnh báo `QThread: Destroyed…` (T16, T17).
+- **Ba chế độ xem.**
+  - *Khung gốc*: ảnh thô để căn vùng, có thể sửa.
+  - *Chỉ xử lý vùng*: `preview_frame(look=Look(regions))`, ghi rõ là chưa gồm phụ đề/màu/khung/logo.
+  - *Thành phẩm*: `preview_frame` với `(cues, style, cover, look)` lấy từ `DubPage._final_preview_cfg()`, tức cùng `visual_settings()` mà Exporter dùng, không có pipeline ffmpeg thứ hai. Khung hiển thị là giây đó của **video gốc**. `preview_frame` bỏ tốc độ và mờ dần vì chỉ vẽ 1 khung.
+- **Kiểm tra thời gian** (`EditRegion.time_error`): `end = 0` là tới hết; `end ≤ start` (khi end ≠ 0), số âm, hay vượt thời lượng đều là lỗi. Lỗi được chặn ở 3 nơi: nút "Lưu vùng" của hộp thoại, nút chạy/xuất của tab Lồng tiếng, và `region_filters` (ném `ValueError`, Exporter báo lỗi thay vì âm thầm áp tới hết video).
+- **Huỷ** không đổi gì: hộp thoại làm việc trên bản sao `regions`. Chỉ "Lưu vùng" mới ghi vào `DubPage.edit_regions` và `project.json` (T22). Chạy lại pipeline không đụng `Project.regions` (T23).
+
 ## 9. Mở rộng xử lý hình ảnh
 
 - Thêm trường mới vào `Look` (có giá trị mặc định = không làm gì), rồi thêm filter vào `look_pre` (trước phụ đề) hoặc `look_post` (sau phụ đề).
@@ -192,6 +204,8 @@ Che chữ đứng **trước** phóng to/lật, để vùng đã căn không l�
 ## 10. Giới hạn kỹ thuật hiện tại
 
 - VieNeu-TTS chỉ có 3 thẻ không lời thử nghiệm (`[cười]`, `[thở dài]`, `[hắng giọng]`). App mới dùng 2 thẻ đầu, các cảm xúc khác chưa ảnh hưởng giọng đọc.
+- Cửa sổ chính đặt `setMinimumSize(1000, 840)` từ trước (`app/gui.py`), nên **không vừa màn hình 1366×768**. Riêng tab Lồng tiếng chỉ cần ~442 px chiều cao, và hộp thoại vùng tự co vừa màn hình (tối thiểu 900×580). Cần sửa riêng ở `gui.py`, chưa làm vì nằm ngoài phạm vi.
+- Video đổi tốc độ phải bỏ bớt khung, nên khung xuất có thể lệch ±1 khung gốc so với ảnh "Thành phẩm". Nội dung chuyển động nhanh sẽ khác chút ít, nội dung đứng yên thì trùng khớp (T21).
 - Vùng chỉnh sửa chỉ là hình chữ nhật cố định (không bám theo vật chuyển động). Nội suy nền (delogo) chỉ đẹp với vùng nhỏ trên nền đơn giản.
 - Nhận diện nhân vật cần AI. Không có AI thì tạm chia theo giới tính nghe được, không có thông tin giới tính thì gom hết vào "Người dẫn chuyện".
 - Nhãn người nói của Gemini chỉ nhất quán trong một đoạn ~5 phút. Việc gộp nhân vật giữa các đoạn dựa vào AI đọc lời thoại.

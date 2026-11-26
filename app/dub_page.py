@@ -405,12 +405,24 @@ class DubPage(QWidget):
         if not self.video:
             return QMessageBox.information(self, "Chưa có video", "Chọn video trước.")
         from .region_dialog import RegionDialog
-        dlg = RegionDialog(self.video, self.edit_regions, self)
+        dlg = RegionDialog(self.video, self.edit_regions, self, final_cfg=self._final_preview_cfg)
         if dlg.exec() == RegionDialog.Accepted:
             self.edit_regions = dlg.result_regions()
             self.project.regions = [asdict(r) for r in self.edit_regions]
             self.project.save()
             self._update_regions_btn()
+
+    def _final_preview_cfg(self):
+        """Cấu hình xuất hiện tại cho chế độ xem “Thành phẩm” (cùng nguồn với visual_settings/Exporter)."""
+        from .render import Cover, Look, SubStyle
+        vis = self.visual_settings()
+        cues = []
+        if vis and vis["subs"]:
+            cues = [srt.Cue(i + 1, _ts(l.start), _ts(l.end), l.text)
+                    for i, l in enumerate(self.project.lines) if l.text.strip()]
+        if not vis:
+            return cues, SubStyle(), Cover(), Look()
+        return cues, vis["style"], vis["cover"], vis["look"]
 
     def _update_regions_btn(self):
         n = sum(1 for r in self.edit_regions if r.enabled)
@@ -956,6 +968,17 @@ class DubPage(QWidget):
             return QMessageBox.warning(self, "Thiếu video", "Chưa chọn video")
         if mode in ("voice", "export") and not self.project.lines:
             return QMessageBox.information(self, "Chưa có câu thoại", "Bấm “Làm tự động” trước để có câu thoại và nhân vật.")
+        if mode in ("auto", "voice", "export") and any(r.enabled for r in self.edit_regions):
+            from .render import probe
+            try:
+                dur = probe(self.video)["duration"]
+            except Exception:  # noqa: BLE001
+                dur = 0.0
+            bad = [f"Vùng {i + 1}: {e}" for i, r in enumerate(self.edit_regions)
+                   if r.enabled and (e := r.time_error(dur))]
+            if bad:
+                return QMessageBox.warning(self, "Vùng chỉnh sửa không hợp lệ",
+                                           "Sửa lại trong “Chỉnh sửa vùng hình ảnh…”:\n" + "\n".join(bad))
         if mode == "export" and not os.path.exists(self.dub_audio_path()):
             return QMessageBox.information(self, "Chưa có tiếng lồng",
                                            f"Chưa có tiếng lồng ở tốc độ {self.sp_vspeed.value():g}x. "

@@ -71,6 +71,19 @@ class EditRegion:
         names = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in d.items() if k in names})
 
+    def time_error(self, duration: float = 0.0) -> str:
+        """'' nếu khoảng thời gian hợp lệ. end = 0 nghĩa là tới hết video."""
+        if self.start < 0 or self.end < 0:
+            return "thời gian không được âm"
+        if self.end and self.end <= self.start:
+            return f"“Đến” ({self.end:.1f}s) phải lớn hơn “Từ” ({self.start:.1f}s), hoặc để “hết video”"
+        if duration > 0:
+            if self.start >= duration:
+                return f"“Từ” ({self.start:.1f}s) vượt thời lượng video ({duration:.1f}s)"
+            if self.end > duration + 0.05:
+                return f"“Đến” ({self.end:.1f}s) vượt thời lượng video ({duration:.1f}s)"
+        return ""
+
 
 def region_px(r: EditRegion, w: int, h: int) -> tuple[int, int, int, int] | None:
     """Đổi % -> pixel chẵn, không chạm mép (delogo yêu cầu), None nếu quá nhỏ."""
@@ -94,9 +107,12 @@ def region_filters(cur: str, regions: list[EditRegion], info: dict, parts: list)
         if not px:
             continue
         x, y, cw, ch = px
+        err = r.time_error(info.get("duration") or 0.0)
+        if err:      # không âm thầm đổi ý nghĩa cấu hình: báo lỗi rõ ràng
+            raise ValueError(f"Vùng chỉnh sửa {k + 1}: {err}")
         en = ""
         if r.start > 0 or r.end > 0:
-            end = r.end if r.end > r.start else 1e9
+            end = r.end if r.end > 0 else 1e9          # end = 0: tới hết video
             en = f":enable='between(t,{r.start:.3f},{end:.3f})'"
         dst = f"[rg{k}]"
         if r.mode == "erase":
@@ -288,6 +304,28 @@ def _run(args, cwd=None):
     flags = 0x08000000 if sys.platform == "win32" else 0
     return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
                           cwd=cwd, creationflags=flags)
+
+
+def _run_cancellable(args, cwd=None, cancel: threading.Event | None = None):
+    """Như _run nhưng dừng ffmpeg ngay khi cancel được bật (dùng cho xem trước)."""
+    if cancel is None:
+        return _run(args, cwd)
+    flags = 0x08000000 if sys.platform == "win32" else 0
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                            text=True, encoding="utf-8", errors="replace", cwd=cwd, creationflags=flags)
+    while True:
+        try:
+            out, err = proc.communicate(timeout=0.1)
+            return subprocess.CompletedProcess(args, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            if cancel.is_set():
+                proc.kill()
+                proc.communicate()
+                raise PreviewCancelled()
+
+
+class PreviewCancelled(Exception):
+    pass
 
 
 def probe(video: str) -> dict:
@@ -503,7 +541,8 @@ def _prepare(tmp: str, cues, style: SubStyle, info: dict) -> None:
 
 # ------------------------------------------------------------------ xem trước
 def preview_frame(video: str, cues, style: SubStyle, cover: Cover, at: float, out_png: str,
-                  info: dict | None = None, max_w: int = 960, look: Look | None = None) -> str:
+                  info: dict | None = None, max_w: int = 960, look: Look | None = None,
+                  cancel: threading.Event | None = None) -> str:
     """Xuất 1 khung hình tại giây `at` có phụ đề + vùng che (+ khung/màu/logo) -> PNG."""
     info = info or probe(video)
     tmp = tempfile.mkdtemp(prefix="st_prev_")
@@ -520,9 +559,9 @@ def preview_frame(video: str, cues, style: SubStyle, cover: Cover, at: float, ou
                 lk.logo = ""
         graph = filter_graph(info, cover, with_subs=True, look=lk, logo_idx=1 if extra else None)
         scale = f";[v]scale='min({max_w},iw)':-2[o]"
-        r = _run([ffmpeg_exe(), "-hide_banner", "-y", "-ss", f"{max(0.0, at):.3f}", "-copyts",
-                  "-i", os.path.abspath(video), *extra, "-filter_complex", graph + scale, "-map", "[o]",
-                  "-frames:v", "1", os.path.abspath(out_png)], cwd=tmp)
+        r = _run_cancellable([ffmpeg_exe(), "-hide_banner", "-y", "-ss", f"{max(0.0, at):.3f}", "-copyts",
+                              "-i", os.path.abspath(video), *extra, "-filter_complex", graph + scale, "-map", "[o]",
+                              "-frames:v", "1", os.path.abspath(out_png)], cwd=tmp, cancel=cancel)
         if r.returncode != 0 or not os.path.exists(out_png):
             raise RuntimeError(_ff_err(r.stderr))
         return out_png
