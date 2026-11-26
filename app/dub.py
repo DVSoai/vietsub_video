@@ -58,6 +58,7 @@ class Project:
     workdir: str
     characters: list[Character] = field(default_factory=list)
     lines: list[Line] = field(default_factory=list)
+    regions: list[dict] = field(default_factory=list)   # vùng chỉnh sửa hình (render.EditRegion dạng dict)
 
     @property
     def path(self) -> str:
@@ -66,7 +67,7 @@ class Project:
     def save(self):
         os.makedirs(self.workdir, exist_ok=True)
         data = {"video": self.video, "video_speed": getattr(self, "video_speed", 1.0), "characters": [asdict(c) for c in self.characters],
-                "lines": [asdict(l) for l in self.lines]}
+                "lines": [asdict(l) for l in self.lines], "regions": list(self.regions)}
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
@@ -81,6 +82,7 @@ class Project:
             p.characters = [Character(**{k: v for k, v in c.items() if k in cf}) for c in d.get("characters", [])]
             p.lines = [Line(**{k: v for k, v in l.items() if k in lf}) for l in d.get("lines", [])]
             p.video_speed = float(d.get("video_speed", 1.0))
+            p.regions = [r for r in d.get("regions", []) if isinstance(r, dict)]
         return p
 
     def char(self, name: str) -> Character | None:

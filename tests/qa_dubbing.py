@@ -475,6 +475,40 @@ if want("T10"):
         f"sau khi quay lại: y={got[0]} cao={got[1]} chế độ='{got[2]}'")
     rp.lk_sat.setValue(100); rp.lk_zoom.setValue(100); rp.lk_speed.setValue(1.0); rp.lk_logo.setText("")
 
+# ================================================================ T14 vùng chỉnh sửa hình trong xuất lồng tiếng
+if want("T14"):
+    from app.render import EditRegion
+    from dataclasses import asdict
+    d.set_video(HARD)
+    d.sp_vspeed.setValue(1.25)
+    d.cb_cover.setCurrentIndex(0); d.chk_subs.setChecked(False); d.cb_aspect.setCurrentIndex(0); d.ed_logo.setText("")
+    d.edit_regions = [EditRegion(30, 20, 10, 10, "box", box_color="#ff0000", start=10, end=20),
+                      EditRegion(17, 79, 66, 12, "erase"), EditRegion(60, 20, 10, 10, "blur", enabled=False)]
+    d.project.regions = [asdict(r) for r in d.edit_regions]; d.project.save()
+    vis = d.visual_settings()
+    n_vis = len(vis["look"].regions) if vis else 0
+    if not os.path.exists(d.dub_audio_path()):
+        run("voice")
+    FakeVieneu.calls.clear()
+    r = run("export")
+    out = d.dub_video_path()
+
+    def px_at(t_orig):
+        rr = subprocess.run([FF, "-v", "error", "-ss", f"{t_orig / 1.25:.3f}", "-i", out, "-frames:v", "1", "-vf",
+                             "crop=20:20:420:170,format=rgb24", "-f", "rawvideo", "-"], capture_output=True)
+        return [int(v) for v in np.frombuffer(rr.stdout, np.uint8).reshape(-1, 3).mean(0)]
+    p5, p15, p25 = px_at(5), px_at(15), px_at(25)
+    red = lambda p_: p_[0] > 200 and p_[1] < 90 and p_[2] < 90  # noqa: E731
+    ok = (n_vis == 2 and red(p15) and not red(p5) and not red(p25) and len(FakeVieneu.calls) == 0
+          and abs(probe_dur(out, "v:0") - 32) < 0.3)
+    rec("T14", "Vùng chỉnh sửa (có khoảng thời gian) áp đúng khi xuất lồng tiếng 1.25x", ok,
+        f"vùng gửi sang xuất={n_vis} (1 vùng tắt bị bỏ), RGB lúc 5s={p5} 15s={p15} 25s={p25}, "
+        f"TTS gọi lại={len(FakeVieneu.calls)}, video={probe_dur(out, 'v:0'):.2f}s")
+    d.set_video(str(QA / "long.mp4")); n_other = len(d.edit_regions)
+    d.set_video(HARD); n_back = len(d.edit_regions)
+    rec("T14b", "Vùng lưu theo từng video", n_other == 0 and n_back == 3, f"video khác={n_other} vùng, mở lại={n_back} vùng")
+    d.edit_regions = []; d.project.regions = []; d.project.save()
+
 rec("T11", "DubWorker không gọi hàm đọc widget từ luồng nền", not OFF_THREAD,
     f"gọi từ luồng nền: {OFF_THREAD or 'không có'}")
 

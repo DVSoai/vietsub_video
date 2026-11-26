@@ -73,6 +73,19 @@ python tests/qa_dubbing.py <nhãn> [T2,T5,...]
 
 Các điểm kiểm tra **không** có lỗi: cache TTS (T3), đồng bộ tốc độ 0,5×/1×/1,25×/2× (T4), xuất không gọi lại AI/TTS (T6), dừng Exporter (T7b), xem trước = video xuất (T8), cấu hình giữa 2 tab (T10).
 
+## 3b. Vùng chỉnh sửa hình (nhánh feat/video-region-editor, 2026-11-26)
+
+| Mã | Trường hợp | Kết quả |
+|---|---|---|
+| T14 | 3 vùng (che đỏ 10–20 s, xoá chữ cả video, 1 vùng tắt), xuất lồng tiếng 1,25x | PASS: chỉ 2 vùng bật được gửi sang xuất; màu đỏ chỉ có ở giây gốc 15, không có ở 5 và 25; không đọc lại TTS; video 32,00 s |
+| T14b | Vùng lưu theo từng video | PASS: video khác 0 vùng, mở lại 3 vùng, mở lại app vẫn còn |
+| — | Kéo chuột tạo vùng, di chuyển, đổi cỡ, bấm nhầm không tạo vùng | PASS (QTest điều khiển chuột thật trên hộp thoại) |
+| — | Vùng sát mép, vùng 0,5 %, 4 vùng trộn kiểu, vùng phủ gần hết khung | PASS: xuất không lỗi ffmpeg |
+| — | Xem trước (preview_frame) so với video xuất | PASS: PSNR 46,6 dB |
+| — | Vùng có thời gian + tốc độ 2x | PASS: vùng xuất hiện đúng giây gốc 10–20 |
+
+Cả bộ `tests/qa_dubbing.py`: **28/28 PASS**.
+
 ## 4. Lỗi / giới hạn còn tồn tại (chưa sửa trong đợt này)
 
 1. Không kiểm thử được VieNeu-TTS, Whisper, Qwen thật: Hugging Face không truy cập được từ môi trường kiểm thử. Cần chạy trên máy có RTX 5060 để kiểm tra chất lượng giọng, tốc độ đọc thực và VRAM.

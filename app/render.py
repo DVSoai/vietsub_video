@@ -51,14 +51,68 @@ PRESETS: dict[str, dict] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class EditRegion:
-    """Independent rectangle on the original video frame (percent coordinates)."""
+    """Vùng chữ nhật độc lập trên khung hình GỐC (toạ độ % để không phụ thuộc cỡ khung xem trước)."""
     x_pct: float = 10.0
     y_pct: float = 10.0
     w_pct: float = 20.0
     h_pct: float = 10.0
-    mode: str = "blur"
+    mode: str = "erase"          # erase (nội suy nền) | blur | box
+    blur: int = 20               # độ mờ (bán kính) cho blur
+    box_color: str = "#000000"
+    box_opacity: int = 100
+    start: float = 0.0           # giây trên timeline video gốc
+    end: float = 0.0             # 0 = tới hết video
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EditRegion":
+        names = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in d.items() if k in names})
+
+
+def region_px(r: EditRegion, w: int, h: int) -> tuple[int, int, int, int] | None:
+    """Đổi % -> pixel chẵn, không chạm mép (delogo yêu cầu), None nếu quá nhỏ."""
+    x = max(2, min(w - 6, int(w * r.x_pct / 100) // 2 * 2))
+    y = max(2, min(h - 6, int(h * r.y_pct / 100) // 2 * 2))
+    cw = min(w - x - 2, int(round(w * r.w_pct / 100))) // 2 * 2
+    ch = min(h - y - 2, int(round(h * r.h_pct / 100))) // 2 * 2
+    if min(cw, ch) < 4:
+        return None
+    return x, y, cw, ch
+
+
+def region_filters(cur: str, regions: list[EditRegion], info: dict, parts: list) -> str:
+    """Áp các vùng lên khung gốc. Mỗi vùng một nhãn riêng; thời gian theo timeline gốc."""
+    w, h = info["w"], info["h"]
+    k = 0
+    for r in regions or []:
+        if not r.enabled or r.mode not in ("blur", "box", "erase"):
+            continue
+        px = region_px(r, w, h)
+        if not px:
+            continue
+        x, y, cw, ch = px
+        en = ""
+        if r.start > 0 or r.end > 0:
+            end = r.end if r.end > r.start else 1e9
+            en = f":enable='between(t,{r.start:.3f},{end:.3f})'"
+        dst = f"[rg{k}]"
+        if r.mode == "erase":
+            parts.append(f"{cur}delogo=x={x}:y={y}:w={cw}:h={ch}{en}{dst}")
+        elif r.mode == "box":
+            col = (r.box_color or "#000000").lstrip("#")[:6]
+            parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:color=0x{col}@{r.box_opacity / 100:.2f}:t=fill{en}{dst}")
+        else:
+            radius = max(1, min(int(r.blur), cw // 2 - 1, ch // 2 - 1))
+            chroma = max(1, min(radius, cw // 4 - 1, ch // 4 - 1))
+            parts.append(f"{cur}split[rgb{k}][rgs{k}]")
+            parts.append(f"[rgs{k}]crop={cw}:{ch}:{x}:{y},boxblur=luma_radius={radius}:chroma_radius={chroma}[rgc{k}]")
+            parts.append(f"[rgb{k}][rgc{k}]overlay={x}:{y}{en}{dst}")
+        cur = dst
+        k += 1
+    return cur
 
 
 @dataclass
@@ -425,28 +479,8 @@ def filter_graph(info: dict, cover: Cover, with_subs: bool, look: Look | None = 
                 parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:"
                              f"color=0x{col}@{cover.box_opacity / 100:.2f}:t=fill[cv]")
             cur = "[cv]"
-    # Independent regions use source coordinates, before geometric transforms.
-    for i, region in enumerate(look.regions if look else []):
-        if region.mode not in ("blur", "box", "erase"):
-            continue
-        x = max(2, min(w - 6, int(w * region.x_pct / 100) // 2 * 2))
-        y = max(2, min(h - 6, int(h * region.y_pct / 100) // 2 * 2))
-        cw = min(w - x - 2, int(w * region.w_pct / 100)) // 2 * 2
-        ch = min(h - y - 2, int(h * region.h_pct / 100)) // 2 * 2
-        if min(cw, ch) < 4:
-            continue
-        dst = f"[region{i}]"
-        if region.mode == "erase":
-            parts.append(f"{cur}delogo=x={x}:y={y}:w={cw}:h={ch}{dst}")
-        elif region.mode == "box":
-            parts.append(f"{cur}drawbox=x={x}:y={y}:w={cw}:h={ch}:color=black:t=fill{dst}")
-        else:
-            radius = max(1, min(30, cw // 2 - 1, ch // 2 - 1))
-            chroma = max(1, min(radius, cw // 4 - 1, ch // 4 - 1))
-            parts.append(f"{cur}split[rb{i}][rs{i}]")
-            parts.append(f"[rs{i}]crop={cw}:{ch}:{x}:{y},boxblur=luma_radius={radius}:chroma_radius={chroma}[rc{i}]")
-            parts.append(f"[rb{i}][rc{i}]overlay={x}:{y}{dst}")
-        cur = dst
+    # 1b) vùng chỉnh sửa riêng: cũng trên khung GỐC, trước tốc độ/lật/phóng to
+    cur = region_filters(cur, look.regions if look else [], info, parts)
     # 2) tốc độ, lật, phóng to, màu  3) phụ đề Việt  4) khung hình, logo, mờ dần
     cur = look_pre(cur, info, look, parts)
     if with_subs:

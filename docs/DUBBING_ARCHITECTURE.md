@@ -24,6 +24,7 @@ Mọi thứ chạy trên máy người dùng. AI từ xa (Gemini/Vertex hoặc n
 | `app/transcribe.py` | Nghe giọng thành phụ đề: Gemini/Vertex (kèm người nói, giới tính, cảm xúc) hoặc Whisper trên máy. Chia đoạn theo khoảng lặng, ghép lại không chồng thời gian. |
 | `app/translator.py` | Dịch theo batch JSON; chế độ lồng tiếng thêm thời lượng `⟪2.4s⟫` vào từng câu để AI dịch vừa thời gian nói. |
 | `app/render.py` | Bộ xuất hình (`Exporter`), xem trước 1 khung (`preview_frame`), dựng filter graph ffmpeg (`filter_graph`, `look_pre`, `look_post`, `audio_graph`), dữ liệu `Cover`, `Look`, `ExportOpts`, `SubStyle`. |
+| `app/region_dialog.py` | Hộp thoại "Chỉnh sửa vùng hình ảnh": kéo chuột tạo/di chuyển/đổi cỡ vùng trên khung hình gốc (đã bỏ viền đen), thanh thời gian, xem kết quả thật bằng `preview_frame`. |
 | `app/render_page.py` | Tab Xuất video Vietsub. Tab Lồng tiếng mượn `_style()`, `_look()`, `_opts()` của trang này (kiểu chữ, màu, phóng to, lật, nhạc nền, bộ mã hoá). |
 | `app/gui.py` | Cửa sổ chính, điều hướng tab, tạo nhà cung cấp AI (`_make_translate_providers`), đồng bộ vùng che khi quay từ tab 4 về tab 3. |
 
@@ -105,6 +106,9 @@ Vùng chữ cứng: `mode` (`none | erase | blur | box`), `y_pct`, `h_pct`, `x_p
 ### `render.Look`
 Chỉnh kiểu CapCut: `speed`, `aspect`, `bg`, `zoom`, `flip`, `bright`, `contrast`, `sat`, `sharpen`, `logo`, `logo_pos`, `logo_size`, `logo_opacity`, `fade`, `music`, `music_vol`, `voice_vol`, `denoise`, `audio_sped` (tiếng đã khớp tốc độ sẵn → không `atempo` thêm).
 
+### `render.EditRegion` (lưu trong `project.json` → `regions`, theo từng video)
+`x_pct`, `y_pct`, `w_pct`, `h_pct` (% khung gốc, góc trên trái + kích thước), `mode` (`erase | blur | box`, mặc định `erase`), `blur`, `box_color`, `box_opacity`, `start`, `end` (giây trên timeline gốc, `end = 0` là tới hết), `enabled`. Khác `Cover`: `Cover.x_pct` là lề đối xứng của dải phụ đề, còn vùng thì có toạ độ tự do.
+
 ### `render.ExportOpts`
 `encoder` (`x264 | nvenc`), `crf`, `preset`, `audio_copy`, `audio_file` (tiếng thay thế, vd tiếng lồng).
 
@@ -167,6 +171,7 @@ Gọi tốc độ video là `s`.
 ```
 [0:v]
  1. Cover      drawbox / boxblur+overlay / delogo   (trên khung hình GỐC)
+ 1b. Vùng      region_filters: mỗi vùng nhãn [rgN], enable='between(t,start,end)' theo thời gian gốc
  2. look_pre   setpts (tốc độ) → hflip → crop+scale (phóng to) → eq (sáng/tương phản/bão hoà) → unsharp
  3. phụ đề     ass=sub.ass (thời gian đã scale_cues theo tốc độ)
  4. look_post  khung 9:16/16:9/1:1/4:5 (nền mờ hoặc đen) → logo (overlay) → fade in/out
@@ -187,6 +192,7 @@ Che chữ đứng **trước** phóng to/lật, để vùng đã căn không l�
 ## 10. Giới hạn kỹ thuật hiện tại
 
 - VieNeu-TTS chỉ có 3 thẻ không lời thử nghiệm (`[cười]`, `[thở dài]`, `[hắng giọng]`). App mới dùng 2 thẻ đầu, các cảm xúc khác chưa ảnh hưởng giọng đọc.
+- Vùng chỉnh sửa chỉ là hình chữ nhật cố định (không bám theo vật chuyển động). Nội suy nền (delogo) chỉ đẹp với vùng nhỏ trên nền đơn giản.
 - Nhận diện nhân vật cần AI. Không có AI thì tạm chia theo giới tính nghe được, không có thông tin giới tính thì gom hết vào "Người dẫn chuyện".
 - Nhãn người nói của Gemini chỉ nhất quán trong một đoạn ~5 phút. Việc gộp nhân vật giữa các đoạn dựa vào AI đọc lời thoại.
 - Câu quá dài so với thời gian sẽ bị cắt đuôi (có log). Cách sửa là rút gọn câu.
