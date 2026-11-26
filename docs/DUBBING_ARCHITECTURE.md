@@ -195,3 +195,11 @@ Che chữ đứng **trước** phóng to/lật, để vùng đã căn không l�
 - Tách giọng trên CPU chậm (~0,6× thời gian thực trên máy 2 nhân). Trên CPU xử lý 1 đoạn/lượt để nút Dừng có tác dụng nhanh.
 - NVENC chỉ tăng tốc mã hoá. Các filter (delogo, boxblur, scale, ass) vẫn chạy trên CPU.
 - Môi trường kiểm thử không tải được model Hugging Face: VieNeu, Whisper, Qwen mới được kiểm thử bằng bản giả lập. Tách giọng MDX-Net, ffmpeg và toàn bộ luồng Qt là thật.
+
+## Bổ sung nhánh nang-cap-ai-mien-phi
+
+- `app/providers.py`: thêm Groq, Cerebras, NVIDIA NIM, SiliconFlow, Zhipu GLM (cờ `free`, `rpm`, `concurrency`, `signup`); mỗi key có hàng đợi riêng (khoảng cách tối thiểu theo rpm + semaphore số request cùng lúc); `strip_thinking()` bỏ `<think>…</think>`.
+- `app/free_keys_dialog.py`: hộp thoại “Kết nối AI miễn phí”, mở từ tab Dịch phụ đề (`MainWindow.open_free_keys`) và tab Lồng tiếng. Theo dõi clipboard, đoán nhà cung cấp theo tiền tố key, gọi thử, lưu `per_provider[name] = {keys, enabled, model}`.
+- `app/hf_local.py`: `QwenASRLocal` (Qwen3-ASR 1.7B/0.6B + Qwen3-ForcedAligner, cửa sổ 240 s), `group_words()` ghép chữ có giờ thành câu.
+- `app/roformer.py`: tách giọng BS-RoFormer bằng audio-separator trong tiến trình con (Dừng = kill); `dub_page` chọn qua `cb_sep`, đổi model thì tách lại (`sep_model.txt`).
+- `app/translator.py` + `app/glossary_dialog.py`: bảng thuật ngữ `thuat_ngu.json` cạnh phim, AI tự lập; “Dịch kỹ” thêm lượt biên tập; Lồng tiếng cũng dùng bảng này.

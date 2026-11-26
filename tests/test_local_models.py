@@ -113,8 +113,8 @@ if why:
 else:
     from app.vocal import load_audio, models_dir
     src = QA / "rof_mix.wav"
-    if not src.exists():   # “giọng” (sin điều biên) + “nhạc” (hợp âm) 20 s
-        sr = 44100; tt = np.arange(sr * 20) / sr
+    if not src.exists():   # “giọng” (sin điều biên) + “nhạc” (hợp âm) 4 s (CPU rất chậm)
+        sr = 44100; tt = np.arange(sr * 4) / sr
         voice = 0.3 * np.sin(2 * np.pi * 220 * tt) * (np.sin(2 * np.pi * 3 * tt) > 0)
         music = 0.15 * (np.sin(2 * np.pi * 110 * tt) + np.sin(2 * np.pi * 165 * tt))
         from app.vocal import save_wav
@@ -126,9 +126,9 @@ else:
         dev = roformer.separate_file(str(src), inst, voc, str(models_dir()), log=print,
                                      progress=lambda d, t: prog.append((d, t)))
         a, b = load_audio(inst), load_audio(voc)
-        ok = a.shape[0] == 2 and abs(a.shape[1] - 44100 * 20) < 4410 and abs(b.shape[1] - a.shape[1]) < 10
+        ok = a.shape[0] == 2 and abs(a.shape[1] - 44100 * 4) < 4410 and abs(b.shape[1] - a.shape[1]) < 10
         rec("R1", "BS-RoFormer tách giọng thật -> 2 file đúng định dạng", ok,
-            f"{dev}, {time.monotonic() - t0:.0f}s cho 20s âm thanh, tiến độ nhận {len(prog)} lần, "
+            f"{dev}, {time.monotonic() - t0:.0f}s cho 4s âm thanh, tiến độ nhận {len(prog)} lần, "
             f"nhạc nền {a.shape}, giọng {b.shape}")
     except Exception as e:  # noqa: BLE001
         rec("R1", "BS-RoFormer tách giọng thật", False, f"{type(e).__name__}: {str(e)[-400:]}")

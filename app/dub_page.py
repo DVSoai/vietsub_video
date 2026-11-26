@@ -501,9 +501,10 @@ class DubPage(QWidget):
         v2.addWidget(self.rb_remove); v2.addWidget(self.rb_duck)
         self.cb_sep = QComboBox()
         self.cb_sep.addItem("MDX-Net (nhanh, nhẹ)", "mdx")
-        self.cb_sep.addItem("BS-RoFormer (sạch hơn, nặng hơn)", "roformer")
+        self.cb_sep.addItem("BS-RoFormer (sạch hơn, cần card ≥4 GB)", "roformer")
         self.cb_sep.setToolTip("Model AI tách lời thoại khỏi nhạc nền. BS-RoFormer tách sạch hơn nhưng tải ~640 MB "
-                               "và chạy chậm hơn (nên có card NVIDIA).")
+                               "và rất nặng: cần card NVIDIA từ 4 GB VRAM. Chạy bằng CPU hay card 2 GB "
+                               "có thể mất hàng chục phút cho mỗi phút phim — khi đó hãy dùng MDX-Net.")
         v2.addLayout(_field("Tách giọng bằng", self.cb_sep))
         self.duck_wrap = QWidget(); dw = QVBoxLayout(self.duck_wrap); dw.setContentsMargins(0, 0, 0, 0)
         dw.addLayout(_field("Tiếng gốc khi có thoại", srow(self.sl_duck, self.lb_duck)))
