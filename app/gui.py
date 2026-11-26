@@ -1385,6 +1385,13 @@ def teardown(app, w, code: int = 0):
     left = [t for t in getattr(w, "_leftover_threads", []) if t.isRunning()]
     if left:
         sys.stdout.flush(); sys.stderr.flush()
+        if sys.platform == "win32":
+            # os._exit vẫn chạy phần dọn DLL của Qt khi luồng còn sống -> 0xC0000005; TerminateProcess thì không.
+            import ctypes
+            k = ctypes.WinDLL("kernel32")
+            k.GetCurrentProcess.restype = ctypes.c_void_p
+            k.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            k.TerminateProcess(k.GetCurrentProcess(), code)
         os._exit(code)
     try:
         w.deleteLater()
