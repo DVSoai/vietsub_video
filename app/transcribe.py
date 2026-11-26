@@ -260,23 +260,24 @@ class Transcriber:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def _run_whisper(self, wav: str, chunks, dur: float) -> list[Cue]:
-        from .hf_local import WhisperLocal
+        from .hf_local import QwenASRLocal, WhisperLocal
         from .vocal import load_audio
-        w = WhisperLocal.get(self.engine, self.log)
+        eng_cls = QwenASRLocal if self.engine.startswith("Qwen/Qwen3-ASR") else WhisperLocal
+        w = eng_cls.get(self.engine, self.log)
         self.event({"type": "stage", "stage": "listen", "text": f"Đang nạp {self.engine.split('/')[-1]}…"})
         w.load()
         audio = load_audio(wav, sr=16000, channels=1)[0]
-        self.log(f"  Whisper chạy trên {w.device}")
+        self.log(f"  {self.engine.split('/')[-1]} chạy trên {w.device}")
         for i, (s, e) in enumerate(chunks):
             self._job(i, "queued", name=f"Nghe đoạn {i + 1}/{len(chunks)} · {_mmss(s)}–{_mmss(e)}", info="đang chờ")
         self.event({"type": "stage", "stage": "listen",
-                    "text": f"Whisper đang nghe giọng: {len(chunks)} đoạn, {_mmss(dur)} âm thanh"})
+                    "text": f"{self.engine.split('/')[-1]} đang nghe giọng: {len(chunks)} đoạn, {_mmss(dur)} âm thanh"})
         results: dict[int, list] = {}
         self.progress(0, len(chunks))
         for i, (s, e) in enumerate(chunks):
             if self.stop.is_set():
                 return []
-            self._job(i, "run", src=f"Whisper · {w.device}", info=f"đang nghe {e - s:.0f}s")
+            self._job(i, "run", src=f"{self.engine.split('/')[-1]} · {w.device}", info=f"đang nghe {e - s:.0f}s")
             segs = w.transcribe(audio[int(s * 16000):int(e * 16000)], self.lang)
             results[i] = segs
             self._job(i, "done", info=f"nghe được {len(segs)} câu")

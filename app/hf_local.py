@@ -13,6 +13,8 @@ import threading
 from .providers import Provider, ProviderError
 
 WHISPER_MODELS = {
+    "Qwen3-ASR 1.7B (tiếng Trung tốt nhất, căn giờ từng chữ)": "Qwen/Qwen3-ASR-1.7B",
+    "Qwen3-ASR 0.6B (nhẹ, nhanh)": "Qwen/Qwen3-ASR-0.6B",
     "Whisper large-v3-turbo (đa ngôn ngữ, nhanh)": "openai/whisper-large-v3-turbo",
     "Belle Whisper turbo (chuyên tiếng Trung)": "BELLE-2/Belle-whisper-large-v3-turbo-zh",
     "Whisper large-v3 (chậm, kỹ hơn)": "openai/whisper-large-v3",
@@ -92,6 +94,122 @@ class WhisperLocal:
             e = e if e is not None else min(length, s + 3)
             segs.append((float(s), float(max(e, s + 0.3)), txt, {}))
         return split_long(segs)
+
+
+# ====================================================================== Qwen3-ASR + ForcedAligner
+QWEN_LANG = {"Tiếng Trung": "Chinese", "Tiếng Anh": "English", "Tiếng Nhật": "Japanese", "Tiếng Hàn": "Korean",
+             "Tiếng Việt": "Vietnamese", "Tiếng Thái": "Thai", "Tiếng Pháp": "French", "Tiếng Đức": "German",
+             "Tiếng Nga": "Russian", "Tiếng Tây Ban Nha": "Spanish"}
+ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
+SENT_END = "。！？!?；;…"
+SOFT_END = "，,、：:"
+
+
+def group_words(items: list[tuple[str, float, float]], full_text: str, max_len: float = 6.5,
+                gap: float = 0.6) -> list[tuple[float, float, str, dict]]:
+    """Gom các chữ/từ có thời gian (của ForcedAligner) thành câu phụ đề.
+
+    items: [(chữ, bắt đầu, kết thúc)] không có dấu câu; full_text: câu nhận được có dấu câu.
+    Dấu câu trong full_text được gắn lại vào chữ đứng trước nó rồi dùng để ngắt câu."""
+    if not items:
+        return []
+    # gắn dấu câu từ full_text vào từng chữ
+    pos, words = 0, []
+    for txt, s, e in items:
+        txt = (txt or "").strip()
+        if not txt:
+            continue
+        k = full_text.find(txt, pos)
+        if k >= 0 and words:
+            between = full_text[pos:k].strip()
+            if between:
+                words[-1][0] += between
+        if k >= 0:
+            pos = k + len(txt)
+        words.append([txt, float(s), float(e)])
+    if words and pos < len(full_text):
+        words[-1][0] += full_text[pos:].strip()
+
+    def joiner(a: str, b: str) -> str:
+        cjk = lambda ch: "\u3000" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af"  # noqa: E731
+        return "" if (a and cjk(a[-1])) or (b and cjk(b[0])) else " "
+    segs, cur = [], []
+    for i, w in enumerate(words):
+        if cur and (w[1] - cur[-1][2] > gap):
+            segs.append(cur); cur = []
+        cur.append(w)
+        dur = cur[-1][2] - cur[0][1]
+        last = w[0][-1] if w[0] else ""
+        if last in SENT_END or (last in SOFT_END and dur > 3.5) or dur > max_len:
+            segs.append(cur); cur = []
+    if cur:
+        segs.append(cur)
+    out = []
+    for seg in segs:
+        text = seg[0][0]
+        for a, b in zip(seg, seg[1:]):
+            text += joiner(a[0], b[0]) + b[0]
+        text = text.strip().rstrip("，,、")
+        if text:
+            out.append((seg[0][1], max(seg[-1][2], seg[0][1] + 0.3), text, {}))
+    return out
+
+
+class QwenASRLocal:
+    _cache: dict[str, "QwenASRLocal"] = {}
+    WINDOW = 240.0          # ForcedAligner căn được tối đa ~5 phút mỗi lần -> cắt 4 phút cho an toàn
+
+    def __init__(self, model_id: str, log=print):
+        self.model_id, self.log = model_id, log
+        self.model = None
+        self.device = ""
+
+    @classmethod
+    def get(cls, model_id: str, log=print) -> "QwenASRLocal":
+        m = cls._cache.get(model_id)
+        if m is None:
+            m = cls._cache[model_id] = cls(model_id, log)
+        m.log = log
+        return m
+
+    def load(self):
+        if self.model is not None:
+            return
+        torch = _torch()
+        try:
+            from qwen_asr import Qwen3ASRModel
+        except ImportError as e:
+            raise ProviderError("Chưa cài Qwen3-ASR. Chạy cai_long_tieng_gpu.bat (đã gồm qwen-asr) rồi mở lại app") from e
+        cuda = torch.cuda.is_available()
+        self.device = device_name()
+        self.log(f"  Đang nạp {self.model_id} + {ALIGNER.split('/')[-1]} trên {self.device} "
+                 "(lần đầu sẽ tải từ Hugging Face)…")
+        dtype = torch.bfloat16 if cuda else torch.float32
+        dev = "cuda:0" if cuda else "cpu"
+        self.model = Qwen3ASRModel.from_pretrained(
+            self.model_id, dtype=dtype, device_map=dev, max_inference_batch_size=4, max_new_tokens=1024,
+            forced_aligner=ALIGNER, forced_aligner_kwargs=dict(dtype=dtype, device_map=dev))
+
+    def transcribe(self, audio, lang: str = "Tiếng Trung") -> list[tuple[float, float, str, dict]]:
+        """audio: numpy float32 mono 16 kHz -> [(bắt đầu, kết thúc, chữ, {})] tính theo giây."""
+        self.load()
+        sr, n = 16000, len(audio)
+        win = int(self.WINDOW * sr)
+        out = []
+        for off in range(0, max(n, 1), win):
+            piece = audio[off:off + win]
+            if len(piece) < sr * 0.3:
+                continue
+            with _GPU_LOCK:
+                res = self.model.transcribe(audio=[(piece, sr)], language=[QWEN_LANG.get(lang)],
+                                            return_time_stamps=True)
+            r = res[0]
+            items = [(getattr(t, "text", ""), getattr(t, "start_time", 0.0), getattr(t, "end_time", 0.0))
+                     for t in (getattr(r, "time_stamps", None) or [])]
+            base = off / sr
+            for s, e, txt, meta in group_words(items, getattr(r, "text", "") or ""):
+                out.append((s + base, e + base, txt, meta))
+        return out
 
 
 def split_long(segs, max_len: float = 7.0):
