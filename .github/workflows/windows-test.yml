@@ -60,14 +60,14 @@ jobs:
       - name: test_browse_no_crash (đổi mục liên tục khi đang dịch tiêu đề)
         if: always()
         run: python tests/run_check.py tests/test_browse_no_crash.py
-      - name: test_download_queue (DPI mặc định của máy ảo, chỉ để so sánh)
+      - name: test_download_queue (offscreen, chỉ để so sánh font)
         if: always()
         continue-on-error: true
         run: python tests/run_check.py tests/test_download_queue.py
-      - name: test_download_queue (khung Hàng chờ tải 1366x768, DPI chuẩn 96 như máy Windows thường)
+      - name: test_download_queue (khung Hàng chờ tải 1366x768, vẽ bằng Windows thật như máy người dùng)
         if: always()
         env:
-          QT_FONT_DPI: "96"
+          QT_QPA_PLATFORM: windows
         run: python tests/run_check.py tests/test_download_queue.py
       - name: test_free_keys_dialog
         if: always()
