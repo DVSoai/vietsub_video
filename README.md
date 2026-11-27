@@ -15,9 +15,39 @@ App desktop dịch phụ đề `.srt` bằng AI (Gemini, Vertex AI, Claude, Open
 
 Bấm đúp `build_exe.bat`. File chạy sẽ nằm ở `dist\SubtitleTranslator.exe`. Có thể copy file này đi bất kỳ đâu. Cấu hình và prompt được lưu trong thư mục `data\` nằm cạnh file exe.
 
+## Giao diện
+
+Thanh bên trái chia 3 nhóm:
+- **Quy trình:** Tìm & tải → Dịch → Lồng tiếng → Xuất video.
+- **Công cụ:** Tự động, Cắt video.
+- **Cài đặt AI** ở dưới cùng.
+
+Trang nào cũng có thanh hành động (tiến độ, Dừng, nút chính) ghim ở đáy, nên màn hình laptop 1366×768 không phải cuộn mới thấy nút. Ảnh từng trang nằm trong `docs/giao-dien/`.
+
+## Tự động từ link (một nút)
+
+Bấm **Tự động** ở thanh bên, dán link (Bilibili, Douyin…) rồi bấm **Bắt đầu**. App tự làm lần lượt:
+1. Tải video, kèm phụ đề có sẵn của Bilibili nếu đã đăng nhập.
+2. Nghe giọng thành phụ đề. Bước này được bỏ qua nếu đã có phụ đề.
+3. Dịch sang tiếng Việt.
+4. In phụ đề vào video, xuất ra `tên.vietsub.mp4`.
+
+Mỗi bước hiện dấu ✔ và thời gian chạy. Cách dịch (AI, ngôn ngữ, prompt) lấy theo tab Dịch; kiểu chữ, che chữ cũ, khung hình lấy theo tab Xuất video. Chọn **Chỉ phụ đề tiếng Việt** nếu không cần xuất video.
+
+Chạy lại cùng link thì app dùng lại video, phụ đề và bản dịch đã có, không tải lại, không tốn lượt AI. Muốn dịch lại thì xoá file `.vi.srt`.
+
+## Sửa phụ đề
+
+Bấm **Sửa phụ đề** ở tab Dịch (hoặc ở tab Tự động sau khi chạy xong).
+- Bảng đặt bản dịch cạnh bản gốc. Bấm một câu để xem khung hình có in phụ đề đó.
+- **Đỏ:** câu trống, câu còn chữ gốc, câu chưa dịch, hoặc giờ sai.
+- **Vàng:** câu đọc quá nhanh (hơn 20 ký tự/giây) hoặc chồng lên câu sau.
+- Lọc **Chỉ câu cần xem**, bấm **Câu cần xem tiếp ▸** để đi lần lượt.
+- Bấm đúp ô để sửa giờ hoặc chữ. Khi lưu, file cũ được giữ lại thành `.bak`.
+
 ## Tìm & tải phim (Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun)
 
-Bấm **1 · Tìm & tải phim** ở đầu cửa sổ. Không cần tài khoản.
+Bấm **Tìm & tải** ở thanh bên trái. Không cần tài khoản. Thư mục lưu, chất lượng, tải kèm phụ đề / ảnh bìa và cookie nằm trong dòng tùy chọn ở đầu Hàng chờ tải (bấm vào để đổi). Nút **Dừng hết / Tiếp tục hết** ở đáy hàng chờ.
 
 **Chọn nguồn** ở ô đầu tiên:
 - **Bilibili:** tìm và tải ngay trong app (các bước bên dưới).
@@ -89,14 +119,14 @@ Một số điều cần biết:
 
 ## Lồng tiếng Việt (VieNeu-TTS, chạy trên máy, miễn phí)
 
-Tab **3 · Lồng tiếng** biến video tiếng Trung thành video nói tiếng Việt:
+Tab **Lồng tiếng** biến video tiếng Trung thành video nói tiếng Việt:
 
 1. **Tách giọng**: model UVR MDX-Net (tự tải ~65 MB lần đầu vào `data/models`) tách lời thoại khỏi nhạc nền và tiếng động.
 2. **Nghe giọng**: Gemini/Vertex nghe phần giọng đã tách, ghi lại từng câu kèm người nói, giới tính, cảm xúc (`.zh.srt`). Nếu đã có `.zh.srt` cùng tên thì dùng luôn.
 3. **Dịch lồng tiếng**: dịch ngắn gọn vừa thời lượng câu nói (khoảng 4–5 tiếng/giây).
 4. **Nhân vật & giọng**: AI gom câu theo nhân vật, app tự chọn giọng VieNeu hợp giới tính. App **dừng ở đây** để bạn nghe thử, đổi giọng, sửa câu.
 5. **Đọc giọng & trộn**: VieNeu-TTS đọc từng câu, câu dài được đọc nhanh lên (tối đa 1.35x), rồi trộn với nhạc nền (bỏ hẳn giọng gốc) hoặc giữ tiếng gốc vặn nhỏ kiểu thuyết minh.
-6. Xuất `ten_video.long_tieng.mp4` và `ten_video.vi.dub.m4a`. Ở tab 4 chọn **Âm thanh: Tiếng lồng** để vừa in phụ đề vừa có giọng Việt.
+6. Xuất `ten_video.long_tieng.mp4` và `ten_video.vi.dub.m4a`. Ở tab Xuất video chọn **Âm thanh: Tiếng lồng** để vừa in phụ đề vừa có giọng Việt.
 
 Cài đặt: máy có card NVIDIA chạy `cai_long_tieng_gpu.bat` (PyTorch CUDA 12.8, hợp RTX 50-series); máy không có card chạy `cai_long_tieng_cpu.bat` (chậm hơn nhiều). Lần đầu đọc giọng, VieNeu tự tải model từ Hugging Face. Mọi file trung gian nằm trong thư mục `ten_video_long_tieng/` cạnh video; câu đã đọc được lưu lại nên sửa một câu chỉ đọc lại câu đó.
 
@@ -117,7 +147,7 @@ VieNeu-TTS dùng giấy phép Apache 2.0 nên dùng được cho kênh có kiế
 
 ## Xuất video Vietsub (in phụ đề vào video)
 
-Bấm **2 · Xuất video Vietsub** ở đầu cửa sổ. Đây là chức năng riêng, tách khỏi phần dịch.
+Bấm **Xuất video** ở thanh bên trái. Đây là chức năng riêng, tách khỏi phần dịch.
 
 1. **Video & phụ đề:** kéo thả video vào. App tự tìm file `ten-video.vi.srt` cùng tên (trong thư mục video hoặc thư mục lưu của phần dịch); bạn cũng có thể tự chọn file `.srt` khác.
 2. **Kiểu chữ:** chọn một kiểu có sẵn (Trắng viền đen, Vàng viền đen, Nền đen mờ, Trắng bóng mềm, Cổ trang vàng kim, Chữ to TikTok) rồi chỉnh tiếp: font, cỡ chữ, đậm/nghiêng, màu chữ, màu và độ dày viền, bóng đổ, nền hộp, vị trí trên/dưới, khoảng cách từ mép. Cỡ chữ và viền tính theo % chiều cao video, nên video 720p hay 1080p đều hiển thị giống nhau.
@@ -147,6 +177,9 @@ Thẻ **Khung hình, màu & âm thanh** (kiểu CapCut): tốc độ video, khun
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
 | `app/bilibili.py` | Tìm kiếm Bilibili (cookie khách buvid3, WBI dự phòng), danh sách tập, tải bằng yt-dlp |
 | `app/bili_dialogs.py` | Đăng nhập Bilibili bằng mã QR, hộp thoại lấy phụ đề (SRT / VTT / TXT / JSON) |
+| `app/auto_page.py` | Tab Tự động từ link: tải → phụ đề → dịch → xuất video, mỗi bước một dòng tiến độ |
+| `app/sub_editor.py` | Bảng sửa phụ đề: bản dịch cạnh bản gốc, xem trước trên video, tô màu câu cần xem |
+| `app/split_page.py` | Tab Cắt video |
 | `app/sources.py` | Danh sách trang được hỗ trợ, lấy link từ đoạn chữ chia sẻ, mở link rút gọn |
 | `app/search_page.py` | Tab Tìm & tải phim |
 | `app/gui.py` | Giao diện PySide6 (khung chính, trang Dịch phụ đề) |

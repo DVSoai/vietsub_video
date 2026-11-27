@@ -10,13 +10,13 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QSize, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup, QStackedWidget,
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QAbstractItemView, QHeaderView, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QHeaderView, QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import srt, theme
@@ -252,6 +252,8 @@ class DropZone(QFrame):
         self.sub = QLabel("Video sẽ được nghe giọng thành phụ đề · chọn nhiều file cho cả bộ phim")
         self.sub.setObjectName("muted")
         self.sub.setWordWrap(True)
+        for lab in (self.title, self.sub):          # không để chữ dài ép ô (và cả cột) rộng ra
+            lab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         col.addWidget(self.title); col.addWidget(self.sub)
         h.addLayout(col, 1)
 
@@ -259,12 +261,27 @@ class DropZone(QFrame):
         if not files:
             return
         if len(files) == 1:
-            self.title.setText(Path(files[0]).name)
-            self.sub.setText(str(Path(files[0]).parent))
+            self._full = (Path(files[0]).name, str(Path(files[0]).parent))
         else:
-            self.title.setText(f"{len(files)} file phụ đề")
             names = ", ".join(Path(f).name for f in files[:3])
-            self.sub.setText(names + (" …" if len(files) > 3 else ""))
+            self._full = (f"{len(files)} file phụ đề", names + (" …" if len(files) > 3 else ""))
+        self.setToolTip("\n".join(files[:20]))
+        self._elide()
+
+    _full: tuple[str, str] | None = None
+
+    def _elide(self):
+        """Đường dẫn dài không có dấu cách không xuống dòng được: rút gọn “…” theo bề rộng ô,
+        để không kéo giãn cả cột (gây thanh cuộn ngang và cắt mất nội dung bên phải)."""
+        if not self._full:
+            return
+        width = max(120, self.width() - 90)
+        for lab, text in zip((self.title, self.sub), self._full):
+            lab.setText(lab.fontMetrics().elidedText(text, Qt.ElideMiddle, width))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
 
     def mousePressEvent(self, e):
         self.clicked.emit()
@@ -306,34 +323,11 @@ class MainWindow(QMainWindow):
         self.files: list[str] = []
         self.t0 = 0.0
 
-        # ===== header
-        title = QLabel("Subtitle Translator"); title.setObjectName("appTitle")
-        sub = QLabel("Dịch phụ đề bằng AI · In vietsub vào video")
-        sub.setObjectName("appSub")
-        tcol = QVBoxLayout(); tcol.setSpacing(2)
-        tcol.addWidget(title); tcol.addWidget(sub)
+        # ===== trạng thái chung (góc phải thanh tiêu đề)
         self.pill = QLabel("●  Sẵn sàng"); self.pill.setObjectName("pill")
-        header = QHBoxLayout()
-        logo = QLabel(); logo.setPixmap(theme.app_icon().pixmap(44, 44))
-        header.addWidget(logo); header.addSpacing(6)
-        header.addLayout(tcol)
-        header.addSpacing(24)
-        # thanh chuyển chức năng
-        nav = QFrame(); nav.setObjectName("nav")
-        nl = QHBoxLayout(nav); nl.setContentsMargins(4, 4, 4, 4); nl.setSpacing(4)
-        self.nav_group = QButtonGroup(self)
-        self.nav_btns = []
-        for i, text in enumerate(("1 · Tìm && tải phim", "2 · Dịch phụ đề", "3 · Lồng tiếng", "4 · Xuất video Vietsub", "5 · Quản lý AI", "6 · Cắt video")):
-            b = QPushButton(text); b.setObjectName("navTab"); b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            self.nav_group.addButton(b, i); nl.addWidget(b); self.nav_btns.append(b)
-        self.nav_btns[1].setChecked(True)
-        header.addWidget(nav, 0, Qt.AlignVCenter)
-        header.addStretch(1)
-        header.addWidget(self.pill, 0, Qt.AlignVCenter)
 
-        # ===== thẻ 1: Kết nối AI
-        c1, v1 = card("Kết nối AI", "1")
+        # ===== trang Cài đặt AI: thẻ cấu hình một nhà cung cấp
+        c1, v1 = card("Cấu hình nhà cung cấp")
         self.cb_provider = QComboBox(); self.cb_provider.addItems(PROVIDERS.keys())
         self.cb_model = QComboBox(); self.cb_model.setEditable(True)
         self.cb_model.lineEdit().setPlaceholderText("Bấm “Lấy model” hoặc gõ tên model")
@@ -378,10 +372,14 @@ class MainWindow(QMainWindow):
         trow.addWidget(self.btn_test)
         v1.addLayout(trow)
         v1.addWidget(self.lb_using)
+        self.btn_rm_keys = btn("Xoá toàn bộ key của nhà này", "link", "Xoá key đã lưu trên máy và tắt nhà cung cấp này")
+        self.btn_rm_keys.setStyleSheet("color:#ef5d6c")
+        rrow = QHBoxLayout(); rrow.addStretch(1); rrow.addWidget(self.btn_rm_keys)
+        v1.addLayout(rrow)
         v1.addStretch(1)
 
         # ===== thẻ 2: Phụ đề
-        c2, v2 = card("Phụ đề", "2")
+        c2, v2 = card("Phụ đề", "1")
         self.drop = DropZone()
         self.ed_output = QLineEdit(); self.ed_output.setPlaceholderText("Để trống = lưu cạnh file gốc")
         self.btn_output = btn("Chọn…", "ghost")
@@ -422,9 +420,10 @@ class MainWindow(QMainWindow):
         arow.addWidget(self.cb_asr, 1); arow.addWidget(self.chk_only_tc)
         v2.addLayout(arow)
         v2.addLayout(field("Lưu vào thư mục", orow))
-        v2.addLayout(lrow)
-        v2.addLayout(field("Prompt riêng cho phim", prow,
-                           "Tên nhân vật, xưng hô, giữ từ Hán Việt… — dòng bắt đầu bằng # là ghi chú"))
+        c2b, v2b = card("Cách dịch", "2")
+        v2b.addLayout(lrow)
+        v2b.addLayout(field("Prompt riêng cho phim", prow,
+                            "Tên nhân vật, xưng hô, giữ từ Hán Việt… — dòng bắt đầu bằng # là ghi chú"))
         self.lb_gloss = QLabel("Chọn phụ đề để dùng bảng thuật ngữ của thư mục phim")
         self.lb_gloss.setObjectName("hint")
         self.btn_gloss = btn("Bảng thuật ngữ…", "link", "Tên nhân vật, chiêu thức, địa danh… dịch thống nhất cả bộ phim")
@@ -433,19 +432,30 @@ class MainWindow(QMainWindow):
                                    "lại cho tự nhiên. Tốn gấp đôi lượt gọi.")
         grow = QHBoxLayout(); grow.setSpacing(8)
         grow.addWidget(self.lb_gloss, 1); grow.addWidget(self.btn_gloss); grow.addWidget(self.chk_refine)
-        v2.addLayout(field("Thuật ngữ cả bộ phim", grow))
+        v2b.addLayout(field("Thuật ngữ cả bộ phim", grow))
 
-        # ===== thẻ 3: Tốc độ
+        # ===== thẻ 3: Tốc độ (nâng cao, thu gọn sẵn)
         c3, v3 = card("Tốc độ", "3")
         self.sp_threads = QSpinBox(); self.sp_threads.setRange(1, 64)
         self.sp_rpm = QSpinBox(); self.sp_rpm.setRange(0, 10000)
         self.sp_rpm.setSpecialValueText("Không giới hạn")
         self.sp_batch = QSpinBox(); self.sp_batch.setRange(1, 300)
+        for w, tip in ((self.sp_threads, "Số batch gửi cùng lúc"), (self.sp_rpm, "Theo RPM của gói API, để tránh lỗi 429"),
+                       (self.sp_batch, "Số câu mỗi lần gửi (30–60 là vừa)")):
+            w.setToolTip(tip)
         srow = QHBoxLayout(); srow.setSpacing(14); srow.setAlignment(Qt.AlignTop)
-        srow.addLayout(field("Số luồng", self.sp_threads, "Số batch gửi cùng lúc"), 1)
-        srow.addLayout(field("Request / phút", self.sp_rpm, "Theo RPM của gói API"), 1)
-        srow.addLayout(field("Batch size", self.sp_batch, "Câu mỗi lần gửi (30–60)"), 1)
-        v3.addLayout(srow)
+        srow.addLayout(field("Số luồng", self.sp_threads), 1)
+        srow.addLayout(field("Request / phút", self.sp_rpm), 1)
+        srow.addLayout(field("Batch size", self.sp_batch), 1)
+        self.speed_body = QWidget()
+        self.speed_body.setLayout(srow); srow.setContentsMargins(0, 0, 0, 0)
+        v3.addWidget(self.speed_body)
+        self.lb_speed = QLabel(); self.lb_speed.setObjectName("hint")
+        self.btn_speed = QToolButton(); self.btn_speed.setObjectName("collapse"); self.btn_speed.setCursor(Qt.PointingHandCursor)
+        v3.itemAt(0).layout().addWidget(self.lb_speed); v3.itemAt(0).layout().addWidget(self.btn_speed)
+        self.btn_speed.clicked.connect(lambda: self._set_speed_open(not self.speed_body.isVisible()))
+        for w in (self.sp_threads, self.sp_rpm, self.sp_batch):
+            w.valueChanged.connect(lambda _=0: self._set_speed_open(self.speed_body.isVisible()))
 
         # ===== thẻ nhật ký
         c4, v4 = card("Nhật ký")
@@ -458,11 +468,20 @@ class MainWindow(QMainWindow):
         v4.addWidget(self.log_box, 1)
 
         left = QVBoxLayout(); left.setSpacing(14)
-        left.addWidget(c1, 1); left.addWidget(c3)
+        left.addWidget(c2); left.addWidget(c2b); left.addStretch(1)
         right = QVBoxLayout(); right.setSpacing(14)
-        right.addWidget(c2); right.addWidget(c4, 1)
+        right.addWidget(c3); right.addWidget(c4, 1)
         cols = QHBoxLayout(); cols.setSpacing(14)
         cols.addLayout(left, 1); cols.addLayout(right, 1)
+
+        # ===== dòng tóm tắt AI đang dùng (cấu hình ở trang Cài đặt AI)
+        aibar = QFrame(); aibar.setObjectName("aiBar")
+        ab = QHBoxLayout(aibar); ab.setContentsMargins(12, 6, 8, 6); ab.setSpacing(8)
+        ai_ic = QLabel(); ai_ic.setPixmap(theme.glyph_pixmap("settings", theme.ACCENT, 16))
+        self.lb_ai_short = QLabel(); self.lb_ai_short.setTextFormat(Qt.RichText)
+        self.btn_ai_go = btn("Đổi nhà cung cấp AI…", "link", "Mở trang Cài đặt AI")
+        ab.addWidget(ai_ic); ab.addWidget(self.lb_ai_short, 1); ab.addWidget(self.btn_ai_go)
+        self.aibar = aibar
 
         # ===== thanh hành động
         act = QFrame(); act.setObjectName("card")
@@ -481,6 +500,9 @@ class MainWindow(QMainWindow):
         self.btn_stop = btn("■  Dừng", "danger")
         self.btn_fix = btn("Check dịch sót", "ghost", "Tìm câu trống / còn chữ gốc trong file đã dịch và dịch lại")
         self.btn_fmt = btn("Check format", "ghost", "Kiểm tra số thứ tự, timecode, dòng trống")
+        self.btn_edit_sub = btn("Sửa phụ đề", "ghost", "Mở bảng sửa phụ đề: so bản gốc với bản dịch, xem trước trên video, "
+                                "tô đỏ câu trống, câu còn chữ gốc, câu đọc quá nhanh")
+        self.btn_edit_sub.setIcon(theme.icon("edit", theme.TEXT, 16))
         self.btn_stop.setEnabled(False)
         # dòng trạng thái (luôn hiện) + nút phóng to / thu nhỏ
         self.lb_stage = QLabel("Chưa chạy. Chọn file rồi bấm “Bắt đầu dịch”.")
@@ -494,7 +516,7 @@ class MainWindow(QMainWindow):
         srow2.addWidget(self.lb_stage, 1); srow2.addWidget(self.btn_detail)
         crow = QHBoxLayout(); crow.setSpacing(8)
         crow.addStretch(1)
-        crow.addWidget(self.btn_fix); crow.addWidget(self.btn_fmt)
+        crow.addWidget(self.btn_edit_sub); crow.addWidget(self.btn_fix); crow.addWidget(self.btn_fmt)
         crow.addSpacing(10)
         crow.addWidget(self.btn_stop); crow.addWidget(self.btn_run)
 
@@ -541,14 +563,14 @@ class MainWindow(QMainWindow):
 
 
         root = QWidget(); root.setObjectName("root")
-        v = QVBoxLayout(root); v.setContentsMargins(22, 18, 22, 18); v.setSpacing(14)
-        self.settings_area = QWidget()
-        self.settings_area.setLayout(cols)
         cols.setContentsMargins(0, 0, 0, 0)
+        settings_w = QWidget(); settings_w.setLayout(cols)
+        self.settings_area = self._scroll(settings_w)
         page1 = QWidget()
-        p1 = QVBoxLayout(page1); p1.setContentsMargins(0, 0, 0, 0); p1.setSpacing(14)
+        p1 = QVBoxLayout(page1); p1.setContentsMargins(0, 0, 0, 0); p1.setSpacing(12)
+        p1.addWidget(self.aibar)
         p1.addWidget(self.settings_area, 1)
-        p1.addWidget(act)
+        p1.addWidget(act)                     # thanh hành động luôn ở đáy, không bị cuộn mất
         self._root_v, self._act = p1, act
 
         from .render_page import RenderPage
@@ -557,49 +579,105 @@ class MainWindow(QMainWindow):
         self.search_page = SearchPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers)
         self.stack = QStackedWidget()
         self.stack.addWidget(self._scroll(self.search_page))   # 0 · Tìm & tải phim
-        self.stack.addWidget(self._scroll(page1))              # 1 · Dịch phụ đề
+        self.stack.addWidget(page1)                            # 1 · Dịch phụ đề
         from .dub_page import DubPage
         self.dub_page = DubPage(self.cfg, self._save_cfg, self._log, self._make_translate_providers,
                                 lambda: self.ed_output.text().strip(), lambda: self.render_page)
         self.stack.addWidget(self._scroll(self.dub_page))      # 2 · Lồng tiếng
         self.stack.addWidget(self._scroll(self.render_page))   # 3 · Xuất video Vietsub
+
+        # ===== 4 · Cài đặt AI: bảng mọi nhà cung cấp + thẻ cấu hình nhà đang chọn
         self.ai_page = QWidget()
-        ai_layout = QVBoxLayout(self.ai_page)
-        ai_card, ai_body = card("Quản lý AI", "5")
-        ai_intro = QLabel("Quản lý API key dùng chung cho Dịch phụ đề và Lồng tiếng.")
-        ai_intro.setWordWrap(True)
-        ai_body.addWidget(ai_intro)
-        self.ai_status = QLabel(); self.ai_status.setWordWrap(True)
-        ai_body.addWidget(self.ai_status)
-        self.ai_provider = QComboBox(); self.ai_provider.addItems(PROVIDERS.keys())
-        self.ai_model = QComboBox(); self.ai_model.setEditable(True)
-        self.ai_keys = QLineEdit(); self.ai_keys.setEchoMode(QLineEdit.Password)
-        self.ai_keys.setPlaceholderText("API key mới (để trống để giữ nguyên)")
-        self.ai_enabled = QCheckBox("Bật nhà cung cấp")
-        ai_body.addLayout(field("Nhà cung cấp", self.ai_provider))
-        ai_body.addLayout(field("Model", self.ai_model))
-        ai_body.addLayout(field("API key", self.ai_keys))
-        ai_body.addWidget(self.ai_enabled)
-        ai_actions = QHBoxLayout()
-        ai_save = btn("Lưu cấu hình", "ghost")
-        ai_save.clicked.connect(self._save_ai_editor)
-        ai_remove = btn("Xóa toàn bộ key", "ghost")
-        ai_remove.clicked.connect(self._remove_ai_keys)
-        ai_connect = btn("Kết nối nhà cung cấp AI", "ghost")
-        ai_connect.clicked.connect(self.open_free_keys)
-        for action in (ai_save, ai_remove, ai_connect):
-            ai_actions.addWidget(action)
-        ai_body.addLayout(ai_actions)
-        self.ai_provider.currentTextChanged.connect(self._load_ai_editor)
-        ai_layout.addWidget(ai_card)
-        ai_layout.addStretch(1)
-        self.stack.addWidget(self._scroll(self.ai_page))
+        al = QHBoxLayout(self.ai_page); al.setContentsMargins(0, 0, 0, 0); al.setSpacing(14)
+        tcard, tv = card("Nhà cung cấp AI")
+        intro = QLabel("Bấm một dòng để cấu hình. Tick <b>Dùng</b> ở nhiều nhà để chạy cùng lúc: "
+                       "nhà nào hết lượt hoặc lỗi, app tự chuyển sang nhà khác.")
+        intro.setObjectName("hint"); intro.setWordWrap(True)
+        self.ai_table = QTableWidget(len(PROVIDERS), 4)
+        self.ai_table.setObjectName("grid")
+        self.ai_table.setHorizontalHeaderLabels(["Nhà cung cấp", "Trạng thái", "Model", "Dùng"])
+        self.ai_table.verticalHeader().setVisible(False)
+        self.ai_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ai_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ai_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.ai_table.setShowGrid(False)
+        self.ai_table.verticalHeader().setDefaultSectionSize(34)
+        ah = self.ai_table.horizontalHeader()
+        for c, mode in enumerate((QHeaderView.Stretch, QHeaderView.Fixed, QHeaderView.Stretch, QHeaderView.Fixed)):
+            ah.setSectionResizeMode(c, mode)
+        self.ai_table.setColumnWidth(1, 150); self.ai_table.setColumnWidth(3, 52)
+        self.ai_table.setWordWrap(False)
+        self._ai_pills: dict[str, QLabel] = {}
+        self._ai_checks: dict[str, QCheckBox] = {}
+        for r, name in enumerate(PROVIDERS):
+            it = QTableWidgetItem(name); it.setData(Qt.UserRole, name)
+            self.ai_table.setItem(r, 0, it)
+            pill = QLabel(); pill.setObjectName("statusPill"); pill.setAlignment(Qt.AlignCenter)
+            holder = QWidget(); hl = QHBoxLayout(holder); hl.setContentsMargins(6, 0, 6, 0); hl.addWidget(pill)
+            self.ai_table.setCellWidget(r, 1, holder)
+            self.ai_table.setItem(r, 2, QTableWidgetItem(""))
+            chk = QCheckBox(); chk.setCursor(Qt.PointingHandCursor)
+            chk.setToolTip("Dùng nhà cung cấp này khi dịch / nghe giọng / lồng tiếng")
+            chk.toggled.connect(lambda on, n=name: self._ai_toggle(n, on))
+            ch = QWidget(); cl = QHBoxLayout(ch); cl.setContentsMargins(10, 0, 10, 0); cl.addWidget(chk, 0, Qt.AlignCenter)
+            self.ai_table.setCellWidget(r, 3, ch)
+            self._ai_pills[name], self._ai_checks[name] = pill, chk
+        self.ai_table.itemSelectionChanged.connect(self._ai_row_selected)
+        tv.addWidget(intro); tv.addWidget(self.ai_table, 1)
+        for r, name in enumerate(PROVIDERS):
+            self.ai_table.item(r, 0).setToolTip(name)
+        al.addWidget(tcard, 6); al.addWidget(c1, 5)
+        self.stack.addWidget(self._scroll(self.ai_page))       # 4 · Cài đặt AI
         from .split_page import SplitPage
-        self.split_page = SplitPage()
-        self.stack.addWidget(self._scroll(self.split_page))
+        self.split_page = SplitPage(self._log)
+        self.stack.addWidget(self.split_page)                  # 5 · Cắt video
+        from .auto_page import AutoPage
+        self.auto_page = AutoPage(self)
+        self.stack.addWidget(self.auto_page)                   # 6 · Tự động từ link
         self.stack.setCurrentIndex(1)
-        v.addLayout(header)
-        v.addWidget(self.stack, 1)
+
+        # ===== thanh điều hướng dọc bên trái (kiểu CapCut)
+        side = QFrame(); side.setObjectName("sidebar"); side.setFixedWidth(94)
+        sl = QVBoxLayout(side); sl.setContentsMargins(9, 14, 9, 12); sl.setSpacing(4)
+        logo = QLabel(); logo.setPixmap(theme.app_icon().pixmap(40, 40)); logo.setAlignment(Qt.AlignCenter)
+        logo.setToolTip("Subtitle Translator")
+        sl.addWidget(logo); sl.addSpacing(10)
+        self.nav_group = QButtonGroup(self)
+        self.nav_btns: list = [None] * self.stack.count()
+
+        def section(text):
+            lab = QLabel(text); lab.setObjectName("sideSection"); lab.setAlignment(Qt.AlignCenter)
+            sl.addSpacing(6); sl.addWidget(lab); sl.addSpacing(2)
+
+        def nav(idx, glyph, text, tip):
+            b = QToolButton(); b.setObjectName("navItem"); b.setCheckable(True)
+            b.setIcon(theme.nav_icon(glyph)); b.setIconSize(QSize(22, 22))
+            b.setText(text); b.setToolTip(tip)
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            b.setFixedWidth(76); b.setMinimumHeight(58); b.setCursor(Qt.PointingHandCursor)
+            self.nav_group.addButton(b, idx); self.nav_btns[idx] = b
+            sl.addWidget(b, 0, Qt.AlignHCenter)
+
+        section("QUY TRÌNH")
+        nav(0, "download", "Tìm && tải", "Tìm và tải phim Bilibili, Douyin…")
+        nav(1, "caption", "Dịch", "Dịch phụ đề / nghe giọng từ video")
+        nav(2, "mic", "Lồng tiếng", "Lồng tiếng Việt cho video")
+        nav(3, "video", "Xuất video", "In phụ đề vào video (Vietsub)")
+        section("CÔNG CỤ")
+        nav(6, "bolt", "Tự động", "Dán link → tải → phụ đề → dịch → xuất video, một nút")
+        nav(5, "cut", "Cắt video", "Cắt video dài thành nhiều đoạn")
+        sl.addStretch(1)
+        nav(4, "settings", "Cài đặt AI", "API key và nhà cung cấp AI")
+
+        # ===== tiêu đề trang
+        self.lb_page = QLabel(); self.lb_page.setObjectName("pageTitle")
+        self.lb_page_sub = QLabel(); self.lb_page_sub.setObjectName("pageSub")
+        tcol = QVBoxLayout(); tcol.setSpacing(0); tcol.addWidget(self.lb_page); tcol.addWidget(self.lb_page_sub)
+        top = QHBoxLayout(); top.addLayout(tcol); top.addStretch(1); top.addWidget(self.pill, 0, Qt.AlignVCenter)
+        main = QVBoxLayout(); main.setContentsMargins(20, 14, 20, 16); main.setSpacing(12)
+        main.addLayout(top); main.addWidget(self.stack, 1)
+        h = QHBoxLayout(root); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(0)
+        h.addWidget(side); h.addLayout(main, 1)
         self.nav_group.idClicked.connect(self._go_page)
         self.setCentralWidget(root)
 
@@ -623,6 +701,11 @@ class MainWindow(QMainWindow):
         self.btn_fix.clicked.connect(lambda: self._start("fix"))
         self.btn_stop.clicked.connect(self._stop)
         self.btn_fmt.clicked.connect(self._check_format)
+        self.btn_edit_sub.clicked.connect(self._edit_subs)
+        self.btn_ai_go.clicked.connect(lambda: self._go_page(4))
+        self.btn_rm_keys.clicked.connect(self._remove_ai_keys)
+        self._ai_timer = QTimer(self); self._ai_timer.setSingleShot(True); self._ai_timer.setInterval(120)
+        self._ai_timer.timeout.connect(self._refresh_ai_page)
         self.btn_clear.clicked.connect(self.log_box.clear)
         self.btn_detail.clicked.connect(lambda: self._set_detail(not self.detail.isVisible()))
         self.chk_use.toggled.connect(self._on_use_toggled)
@@ -682,6 +765,26 @@ class MainWindow(QMainWindow):
         self.cb_target.setCurrentText(c.get("target", "Tiếng Việt"))
         self.cb_source.setCurrentText(c.get("source", "Tiếng Trung"))
         self._set_detail(bool(c.get("detail", False)), resize=False)
+        self._set_speed_open(bool(c.get("speed_open", False)))
+
+    def _set_speed_open(self, on: bool):
+        """Thẻ Tốc độ: thu gọn thì chỉ hiện một dòng tóm tắt."""
+        self.speed_body.setVisible(on)
+        self.btn_speed.setText("Thu gọn ▴" if on else "Chỉnh ▾")
+        rpm = self.sp_rpm.value()
+        self.lb_speed.setText("" if on else f"{self.sp_threads.value()} luồng · "
+                              f"{f'{rpm} req/phút' if rpm else 'không giới hạn'} · batch {self.sp_batch.value()}")
+        self.cfg["speed_open"] = on
+
+    PAGES = {
+        0: ("Tìm & tải phim", "Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun"),
+        1: ("Dịch phụ đề", "Dịch file .srt, hoặc nghe giọng từ video rồi dịch bằng AI"),
+        2: ("Lồng tiếng", "Biến video tiếng Trung thành video nói tiếng Việt"),
+        3: ("Xuất video Vietsub", "In phụ đề vào video, che chữ có sẵn, đổi khung hình"),
+        4: ("Cài đặt AI", "API key dùng chung cho dịch, nghe giọng và lồng tiếng"),
+        5: ("Cắt video", "Cắt một video dài thành nhiều đoạn bằng ffmpeg, không cần mạng"),
+        6: ("Tự động từ link", "Dán link → tải → lấy phụ đề → dịch → xuất video Vietsub, chỉ một nút"),
+    }
 
     def _save_provider_state(self, name: str):
         pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
@@ -710,8 +813,12 @@ class MainWindow(QMainWindow):
             i = 1
         self.stack.setCurrentIndex(i)
         self.nav_btns[i].setChecked(True)
+        title, sub = self.PAGES.get(i, ("", ""))
+        self.lb_page.setText(title); self.lb_page_sub.setText(sub)
         if i == 4:
             self._refresh_ai_page()
+        if i == 6:
+            self.auto_page.on_show()
         if self.cfg.get("page") == 3 and i == 2 and getattr(self.render_page, "_dub_sync", None):
             self.dub_page.pull_cover_from_render(self.render_page)
             self.render_page._dub_sync = None
@@ -739,8 +846,10 @@ class MainWindow(QMainWindow):
             threads=self.sp_threads.value(), rpm=self.sp_rpm.value(), batch=self.sp_batch.value(),
             target=self.cb_target.currentText(), source=self.cb_source.currentText(),
             prompt=self.cb_prompt.currentText(), detail=self.detail.isVisible(),
-            refine=self.chk_refine.isChecked(),
+            refine=self.chk_refine.isChecked(), speed_open=self.speed_body.isVisible(),
         )
+        if hasattr(self, "auto_page"):
+            self.auto_page.store_state()
         DATA.mkdir(parents=True, exist_ok=True)
         if getattr(self, "_config_locked", False):
             return
@@ -960,6 +1069,17 @@ class MainWindow(QMainWindow):
         else:
             text = "Khi dịch dùng: " + parts[0] + " — tick ô bên trên ở nhiều nhà cung cấp để dùng cùng lúc"
         self.lb_using.setText(text)
+        # dòng tóm tắt ở tab Dịch
+        if not parts:
+            short = ("<span style='color:#f2b84b'>Chưa có API key nào.</span> "
+                     "Bấm “Đổi nhà cung cấp AI…” để thêm key (có nhà miễn phí).")
+        else:
+            short = "AI: " + " · ".join(f"<b>{n.split(' (')[0]}</b> <span style='color:#8a94a7'>{m}</span>"
+                                        for n, k, m, _ in src if k)
+        if hasattr(self, "lb_ai_short"):
+            self.lb_ai_short.setText(short)
+        if hasattr(self, "_ai_timer"):
+            self._ai_timer.start()
 
     def _make_translate_providers(self):
         provs = []
@@ -1000,54 +1120,64 @@ class MainWindow(QMainWindow):
             self.cb_provider.currentText(), {})["models_cache"] = models
         self._log(f"✔ Có {len(models)} model")
 
-    def _load_ai_editor(self, name):
-        pc = self.cfg.get("per_provider", {}).get(name, {})
-        self.ai_model.clear()
-        self.ai_model.addItems(pc.get("models_cache") or PROVIDERS[name]["models"])
-        self.ai_model.setCurrentText(pc.get("model") or self.ai_model.currentText())
-        self.ai_keys.clear()
-        self.ai_enabled.setChecked(bool(pc.get("enabled")))
-        self.ai_keys.setEnabled(PROVIDERS[name]["kind"] not in ("hf_local", "vertex_sa"))
-
-    def _save_ai_editor(self):
-        name = self.ai_provider.currentText()
-        self._save_provider_state(self.cb_provider.currentText())
-        pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
-        key = self.ai_keys.text().strip()
-        if key and self.ai_keys.isEnabled():
-            pc["keys"] = key
-        pc["model"] = self.ai_model.currentText().strip()
-        pc["enabled"] = self.ai_enabled.isChecked()
-        self._current_provider = None
-        self._on_provider(self.cb_provider.currentText())
-        self._save_cfg()
-        self._refresh_ai_page()
-
     def _remove_ai_keys(self):
-        name = self.ai_provider.currentText()
+        name = self.cb_provider.currentText()
         if QMessageBox.question(self, "Xóa key", f"Xóa toàn bộ key của {name} trên máy?") != QMessageBox.Yes:
             return
-        self._save_provider_state(self.cb_provider.currentText())
+        self._save_provider_state(name)
         pc = self.cfg.setdefault("per_provider", {}).setdefault(name, {})
         pc["keys"] = ""
         pc["enabled"] = False
         self._current_provider = None
-        self._on_provider(self.cb_provider.currentText())
+        self._on_provider(name)
         self._save_cfg()
         self._refresh_ai_page()
 
+    def ai_status(self, name: str) -> tuple[str, str]:
+        """(chữ trạng thái, kiểu màu) của một nhà cung cấp."""
+        pc = self.cfg.get("per_provider", {}).get(name, {})
+        count = len([k for k in pc.get("keys", "").splitlines() if k.strip()])
+        if PROVIDERS[name]["kind"] == "hf_local":
+            return ("Đang bật · trên máy", "done") if pc.get("enabled") else ("Chạy trên máy", "")
+        if pc.get("enabled") and count:
+            return f"Đang bật · {count} {'file' if PROVIDERS[name]['kind'] == 'vertex_sa' else 'key'}", "done"
+        if pc.get("enabled"):
+            return "Bật, thiếu key", "warn"
+        return ("Đã có key", "run") if count else ("Chưa có key", "")
+
     def _refresh_ai_page(self):
+        """Cập nhật bảng nhà cung cấp tại chỗ (không tạo lại ô, để bấm ô Dùng không bị mất)."""
+        if self._current_provider is None or self._loading:
+            return
         self._save_provider_state(self.cb_provider.currentText())
-        rows = []
-        for name in PROVIDERS:
+        cur = self.cb_provider.currentText()
+        for r, name in enumerate(PROVIDERS):
             pc = self.cfg.get("per_provider", {}).get(name, {})
-            count = len([k for k in pc.get("keys", "").splitlines() if k.strip()])
-            status = "Đang bật" if pc.get("enabled") and count else ("Đã có key" if count else "Chưa có key")
-            if PROVIDERS[name]["kind"] == "hf_local":
-                status = "Chạy cục bộ — không cần key"
-            rows.append(f"{name}: {status}")
-        self.ai_status.setText("\n".join(rows))
-        self._load_ai_editor(self.ai_provider.currentText())
+            text, state = self.ai_status(name)
+            pill = self._ai_pills[name]
+            pill.setText(text); pill.setProperty("state", state); repolish(pill)
+            default = PROVIDERS[name]["models"][0] if PROVIDERS[name]["models"] else ""
+            self.ai_table.item(r, 2).setText(pc.get("model") or default)
+            chk = self._ai_checks[name]
+            chk.blockSignals(True); chk.setChecked(bool(pc.get("enabled"))); chk.blockSignals(False)
+            if name == cur and self.ai_table.currentRow() != r:
+                self.ai_table.blockSignals(True); self.ai_table.selectRow(r); self.ai_table.blockSignals(False)
+
+    def _ai_row_selected(self):
+        r = self.ai_table.currentRow()
+        if 0 <= r < self.ai_table.rowCount():
+            name = self.ai_table.item(r, 0).data(Qt.UserRole)
+            if name != self.cb_provider.currentText():
+                self.cb_provider.setCurrentText(name)
+
+    def _ai_toggle(self, name: str, on: bool):
+        """Ô Dùng trong bảng: bật/tắt nhà cung cấp mà không cần mở cấu hình."""
+        if name == self.cb_provider.currentText():
+            self.chk_use.setChecked(on)
+        else:
+            self.cfg.setdefault("per_provider", {}).setdefault(name, {})["enabled"] = on
+            self._refresh_using()
+        self._save_cfg()
 
     def open_free_keys(self):
         """Hộp thoại lấy key miễn phí (dùng chung cho tab Dịch phụ đề và Lồng tiếng)."""
@@ -1063,8 +1193,7 @@ class MainWindow(QMainWindow):
             n = sum(1 for pc in self.cfg.get("per_provider", {}).values() if pc.get("enabled") and pc.get("keys"))
             self._log(f"✔ Đã bật nhà cung cấp miễn phí. Đang dùng {n} nhà, hết lượt nhà này sẽ tự sang nhà khác.")
         self._refresh_using()
-        if hasattr(self, "ai_status"):
-            self._refresh_ai_page()
+        self._refresh_ai_page()
 
     def _test_conn(self):
         try:
@@ -1090,13 +1219,7 @@ class MainWindow(QMainWindow):
         except ProviderError as e:
             return QMessageBox.warning(self, "Lỗi", str(e))
         self._save_cfg()
-        settings = Settings(
-            source_lang=self.cb_source.currentText(), target_lang=self.cb_target.currentText(),
-            threads=self.sp_threads.value(), batch_size=self.sp_batch.value(),
-            rpm=self.sp_rpm.value(), custom_prompt=self._prompt_text(),
-            glossary=load_glossary(self._gloss_path()) if self.files else None,
-            refine=self.chk_refine.isChecked(),
-        )
+        settings = self.translate_settings(self._gloss_path())
         if settings.glossary:
             self._log(f"Bảng thuật ngữ: {len(settings.glossary)} mục")
         names = sorted({p.label.split(" · ")[0] for p in providers})
@@ -1116,6 +1239,16 @@ class MainWindow(QMainWindow):
         self.t0 = time.monotonic()
         self.timer.start(500)
         self.worker.start()
+
+    def translate_settings(self, gloss_path: str = "") -> Settings:
+        """Cài đặt dịch đang chọn ở tab Dịch (dùng chung cho tab Dịch và chế độ Tự động)."""
+        return Settings(
+            source_lang=self.cb_source.currentText(), target_lang=self.cb_target.currentText(),
+            threads=self.sp_threads.value(), batch_size=self.sp_batch.value(),
+            rpm=self.sp_rpm.value(), custom_prompt=self._prompt_text(),
+            glossary=load_glossary(gloss_path) if gloss_path else None,
+            refine=self.chk_refine.isChecked(),
+        )
 
     def _stop(self):
         if self.worker:
@@ -1272,6 +1405,32 @@ class MainWindow(QMainWindow):
         self.lb_time.setText(f"⏱ {s // 60}:{s % 60:02d}" if s >= 60 else f"⏱ {s}s")
 
     # ---------- check format
+    def _edit_subs(self):
+        """Mở bảng sửa phụ đề cho file đang chọn (bản dịch cạnh bản gốc, xem trước trên video)."""
+        from PySide6.QtWidgets import QInputDialog
+        from .sub_editor import SubtitleEditor, find_video
+        if not self.files:
+            return QMessageBox.warning(self, "Thiếu file", "Chọn file .srt hoặc video ở thẻ Phụ đề trước.")
+        f = self.files[0]
+        if len(self.files) > 1:
+            names = [Path(x).name for x in self.files]
+            name, ok = QInputDialog.getItem(self, "Sửa phụ đề", "Chọn file:", names, 0, False)
+            if not ok:
+                return
+            f = self.files[names.index(name)]
+        out_dir, target = self.ed_output.text().strip(), self.cb_target.currentText()
+        out = output_path_for(f, out_dir, target)
+        src = source_srt_for(f, out_dir, self.cb_source.currentText()) if is_media(f) else f
+        if not os.path.exists(out):
+            if not os.path.exists(src):
+                return QMessageBox.information(self, "Sửa phụ đề", "Chưa có phụ đề. Bấm “Bắt đầu dịch” trước.")
+            out, src = src, ""                     # chưa dịch: sửa luôn bản gốc
+        video = f if is_media(f) else find_video(f)
+        dlg = SubtitleEditor(out, src if src and os.path.exists(src) and src != out else "", video,
+                             self.render_page._style(), self.cb_target.currentText(), self)
+        dlg.saved.connect(lambda p: self._log(f"✔ Đã lưu phụ đề đã sửa: {p}"))
+        dlg.exec()
+
     def _check_format(self):
         if not self.files:
             return QMessageBox.warning(self, "Thiếu file", "Chưa chọn file .srt")
@@ -1311,6 +1470,10 @@ class MainWindow(QMainWindow):
             self.log_box.appendHtml(f'<span style="color:{color}; font-weight:{weight}">{safe}</span>')
 
     def closeEvent(self, e):
+        if self.auto_page.busy() and QMessageBox.question(
+                self, "Đang chạy tự động", "Đang xử lý link tự động. Dừng và thoát?") != QMessageBox.Yes:
+            e.ignore()
+            return
         if self.split_page.busy() and QMessageBox.question(self, "Cắt video", "Dừng cắt video và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
@@ -1326,6 +1489,7 @@ class MainWindow(QMainWindow):
                 self, "Đang lồng tiếng", "Đang lồng tiếng. Dừng và thoát?") != QMessageBox.Yes:
             e.ignore()
             return
+        self.auto_page.shutdown()
         self.split_page.shutdown()
         self.render_page.shutdown()
         self.search_page.shutdown()
@@ -1344,7 +1508,7 @@ class MainWindow(QMainWindow):
         """Mọi luồng nền đang được các trang giữ (đọc font, nạp giọng, tải model, kiểm tra key…)."""
         from .free_keys_dialog import _ORPHANS
         out = list(_ORPHANS)
-        for obj in (self, self.render_page, self.dub_page, self.search_page):
+        for obj in (self, self.render_page, self.dub_page, self.search_page, self.auto_page):
             for v in list(vars(obj).values()):
                 if isinstance(v, QThread) and v not in out:
                     out.append(v)

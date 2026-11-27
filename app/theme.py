@@ -77,6 +77,51 @@ def app_icon() -> QIcon:
     return QIcon(pm)
 
 
+# Biểu tượng nét mảnh của Windows (Segoe Fluent Icons trên Win 11, Segoe MDL2 Assets trên Win 10)
+GLYPH = {
+    "download": "", "caption": "", "mic": "", "video": "", "settings": "",
+    "cut": "", "bolt": "", "edit": "", "pause": "", "play": "",
+    "delete": "", "folder": "", "link": "", "search": "", "check": "",
+    "error": "", "sync": "", "save": "", "copy": "", "filter": "",
+}
+
+
+def _icon_font(px: int) -> QFont:
+    f = QFont()
+    f.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+    f.setPixelSize(px)
+    return f
+
+
+def glyph_pixmap(name: str, color: str, px: int = 22) -> QPixmap:
+    ratio = 2
+    pm = QPixmap(px * ratio, px * ratio)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    p.setFont(_icon_font(int(px * ratio * 0.82)))
+    p.setPen(QColor(color))
+    p.drawText(pm.rect(), Qt.AlignCenter, GLYPH.get(name, name))
+    p.end()
+    pm.setDevicePixelRatio(ratio)
+    return pm
+
+
+def icon(name: str, color: str = TEXT, px: int = 18) -> QIcon:
+    return QIcon(glyph_pixmap(name, color, px))
+
+
+def nav_icon(name: str, px: int = 22) -> QIcon:
+    """Biểu tượng cho nút điều hướng: xám khi thường, trắng khi đang chọn."""
+    ic = QIcon()
+    ic.addPixmap(glyph_pixmap(name, MUTED, px), QIcon.Normal, QIcon.Off)
+    ic.addPixmap(glyph_pixmap(name, TEXT, px), QIcon.Active, QIcon.Off)
+    ic.addPixmap(glyph_pixmap(name, "#ffffff", px), QIcon.Normal, QIcon.On)
+    ic.addPixmap(glyph_pixmap(name, "#ffffff", px), QIcon.Active, QIcon.On)
+    return ic
+
+
 def app_font() -> QFont:
     f = QFont()
     f.setFamilies(["Segoe UI", "Inter", "DM Sans", "Helvetica Neue", "Arial"])
@@ -185,6 +230,41 @@ QListWidget#partList::item {{ padding: 6px 4px; }}
 QListWidget#partList::indicator {{ width: 16px; height: 16px; }}
 QDialog {{ background: {CARD}; }}
 
+/* ---- thanh điều hướng dọc bên trái (kiểu CapCut) ---- */
+#sidebar {{ background: #0a0d12; border-right: 1px solid {BORDER}; }}
+#sideSection {{ color: #5b6578; font-size: 7.5pt; font-weight: 700; letter-spacing: 1px; }}
+QToolButton#navItem {{ background: transparent; border: none; border-radius: 10px; padding: 7px 2px 6px 2px;
+                       color: {MUTED}; font-size: 8.5pt; font-weight: 600; }}
+QToolButton#navItem:hover {{ background: {CARD_2}; color: {TEXT}; }}
+QToolButton#navItem:checked {{ background: {ACCENT_DARK}; color: white; }}
+#pageTitle {{ font-size: 15pt; font-weight: 700; }}
+#pageSub {{ color: {MUTED}; font-size: 9pt; }}
+#aiBar {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
+#aiBar QLabel {{ font-size: 9pt; }}
+#statusPill {{ border-radius: 9px; padding: 2px 9px; font-size: 8.5pt; font-weight: 700;
+               background: {CARD_2}; color: {MUTED}; }}
+#statusPill[state="run"] {{ background: #10241f; color: {ACCENT_HOVER}; }}
+#statusPill[state="done"] {{ background: #0f2a22; color: {ACCENT}; }}
+#statusPill[state="warn"] {{ background: #2e2512; color: {WARN}; }}
+#statusPill[state="err"] {{ background: #2a1419; color: {DANGER}; }}
+#jobThumb {{ background: #05070a; border-radius: 6px; color: {MUTED}; }}
+#optSummary {{ text-align: left; background: {BG}; border: 1px solid {BORDER}; border-radius: 8px;
+               padding: 6px 10px; color: {TEXT}; font-weight: 500; }}
+#optSummary:hover {{ border-color: {ACCENT}; }}
+#stepRow {{ background: transparent; border-radius: 8px; }}
+#stepRow[state="now"] {{ background: #10241f; }}
+#stepName {{ font-size: 10pt; }}
+#stepName[state="wait"] {{ color: {MUTED}; }}
+#stepName[state="now"] {{ color: {ACCENT_HOVER}; font-weight: 700; }}
+#stepName[state="skip"] {{ color: #4a5568; }}
+#stepName[state="err"] {{ color: {DANGER}; }}
+#stepTime {{ color: {MUTED}; font-size: 9pt; }}
+QTableWidget#grid {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; font-size: 9.5pt;
+                     gridline-color: #151a23; selection-background-color: {ACCENT_DARK}; }}
+QTableWidget#grid::item {{ padding: 3px 6px; }}
+QToolButton#collapse {{ background: transparent; border: none; color: {MUTED}; font-weight: 600; padding: 2px 4px; }}
+QToolButton#collapse:hover {{ color: {TEXT}; }}
+
 #nav {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
 QPushButton#navTab {{ background: transparent; border: none; border-radius: 9px; padding: 8px 16px;
                       color: {MUTED}; font-weight: 600; }}
@@ -239,6 +319,9 @@ QProgressBar::chunk {{ border-radius: 5px;
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 4px; }}
 QScrollBar::handle:vertical {{ background: #2a3344; border-radius: 3px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: #3a465c; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 4px; }}
+QScrollBar::handle:horizontal {{ background: #2a3344; border-radius: 3px; min-width: 30px; }}
+QScrollBar::handle:horizontal:hover {{ background: #3a465c; }}
 QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{
     background: none; height: 0; }}
 QMessageBox {{ background: {CARD}; }}
