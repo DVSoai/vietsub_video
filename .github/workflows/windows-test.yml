@@ -57,6 +57,12 @@ jobs:
       - name: test_ui_redesign (điều hướng, cắt video, sửa phụ đề, tự động từ link)
         if: always()
         run: python tests/run_check.py tests/test_ui_redesign.py
+      - name: test_browse_no_crash (đổi mục liên tục khi đang dịch tiêu đề)
+        if: always()
+        run: python tests/run_check.py tests/test_browse_no_crash.py
+      - name: test_download_queue (khung Hàng chờ tải 1366x768)
+        if: always()
+        run: python tests/run_check.py tests/test_download_queue.py
       - name: test_free_keys_dialog
         if: always()
         run: python tests/run_check.py tests/test_free_keys_dialog.py

@@ -11,10 +11,10 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
-    QSizePolicy,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QCheckBox, QComboBox, QDialog, QMenu, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
@@ -184,18 +184,20 @@ class JobRow(QFrame):
     pause = Signal(object)
     resume = Signal(object)
     remove = Signal(object)
-    TEXT_W = 232
+    TEXT_W = 252
 
     def __init__(self, job: DownloadJob):
         super().__init__()
         self.job = job
         self.setObjectName("jobRow")
-        h = QHBoxLayout(self); h.setContentsMargins(10, 9, 10, 8); h.setSpacing(10)
-        self.thumb = QLabel(); self.thumb.setObjectName("jobThumb"); self.thumb.setFixedSize(76, 43)
+        h = QHBoxLayout(self); h.setContentsMargins(8, 6, 8, 5); h.setSpacing(8)
+        self.thumb = QLabel(); self.thumb.setObjectName("jobThumb"); self.thumb.setFixedSize(56, 32)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.setPixmap(theme.glyph_pixmap("video", "#3a465c", 18))
-        v = QVBoxLayout(); v.setSpacing(4)
+        v = QVBoxLayout(); v.setSpacing(2)
         self.lb_title = QLabel(); self.lb_title.setObjectName("jobTitle")
+        self.lb_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # tên dài không đẩy nút ra ngoài
+        self.lb_title.setMinimumWidth(40)
         self.pill = QLabel(); self.pill.setObjectName("statusPill")
         trow = QHBoxLayout(); trow.setSpacing(6); trow.addWidget(self.lb_title, 1); trow.addWidget(self.pill)
         self.bar = QProgressBar(); self.bar.setFixedHeight(5)
@@ -216,6 +218,7 @@ class JobRow(QFrame):
         self.btn_resume.clicked.connect(lambda: self.resume.emit(self.job))
         self.btn_remove.clicked.connect(lambda: self.remove.emit(self.job))
         crow = QHBoxLayout(); crow.setContentsMargins(0, 0, 0, 0); crow.setSpacing(0)
+        self.trow, self.crow, self._compact = trow, crow, None
         for b in (self.btn_pause, self.btn_resume, self.btn_copy):
             crow.addWidget(b)
         crow.addStretch(1); crow.addWidget(self.btn_remove)
@@ -224,6 +227,25 @@ class JobRow(QFrame):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
         self.refresh()
+
+    def _place(self, compact: bool):
+        """Gọn 1 dòng (chờ / tạm dừng / đã dừng / xong): nút nằm cạnh tên; đầy đủ (đang tải / lỗi): ảnh, thanh, chi tiết."""
+        if compact == self._compact:
+            return
+        self._compact = compact
+        btns = (self.btn_pause, self.btn_resume, self.btn_copy, self.btn_remove)
+        for b in btns:
+            (self.trow if compact else self.crow).removeWidget(b)
+        if compact:
+            for b in btns:
+                self.trow.addWidget(b)
+        else:
+            for b in btns[:3]:
+                self.crow.insertWidget(self.crow.count() - 1, b)
+            self.crow.addWidget(self.btn_remove)
+        self.layout().setContentsMargins(*((8, 3, 6, 3) if compact else (8, 6, 8, 5)))
+        self.thumb.setVisible(not compact)
+        self.thumb.setFixedSize(*((56, 32) if not compact else (0, 0)))
 
     def set_thumb(self, data: bytes):
         pm = QPixmap()
@@ -273,9 +295,24 @@ class JobRow(QFrame):
         self.btn_copy.setVisible(j.state == "error")
         self.btn_pause.setVisible(j.state in ("queued", "running") and not j.cancel)
         self.btn_resume.setVisible(j.state in ("paused", "stopped", "error"))
-        self.btn_resume.setText("Tiếp tục" if j.state in ("paused", "stopped") else "Tải lại")
+        # Tạm dừng -> Tiếp tục; Đã dừng -> Thử lại; Lỗi -> Tải lại (đều tải tiếp phần đã có)
+        self.btn_resume.setText({"paused": "Tiếp tục", "stopped": "Thử lại"}.get(j.state, "Tải lại"))
+        self.btn_resume.setToolTip("Tải tiếp phim này (giữ phần đã tải, không tải lại từ đầu)")
         self.btn_remove.setVisible(j.cancel != "remove")
-        self.btn_remove.setText("Xoá khỏi danh sách" if j.state == "done" else "Bỏ")
+        self.btn_remove.setText({"done": "Xoá khỏi danh sách", "stopped": "Xóa", "error": "Xóa"}.get(j.state, "Bỏ"))
+        self.btn_remove.setToolTip("Xóa phim này khỏi hàng chờ (xoá phần tải dở, không đụng file đã xong)"
+                                   if j.state != "done" else "Xoá khỏi danh sách (file đã tải vẫn giữ)")
+        # Đang tải / lỗi: đầy đủ (ảnh, thanh, chi tiết). Còn lại: 1 dòng gọn, % đã tải ghi trên nhãn
+        full = j.state in ("running", "error") or bool(j.cancel)
+        self._place(not full)
+        self.lb_info.setVisible(full)
+        if not full:
+            self.bar.setVisible(False)
+            if j.state in ("paused", "stopped") and 0 < j.pct < 100:
+                self.pill.setText(f"{text} {int(j.pct)}%")
+            if j.state == "done":
+                self.btn_remove.setText("Xoá")
+            _elide(self.lb_title, j.title, 110 if j.state in ("paused", "stopped") else 140 if j.state == "queued" else 200)
         _elide(self.lb_info, info, self.TEXT_W)
         self.lb_info.setToolTip(j.info)
         color = {"error": "#ef5d6c"}.get(j.state, "")
@@ -374,6 +411,72 @@ class DownloadThread(QThread):
         self.wait(3000)
 
 
+class QueueDialog(QDialog):
+    """Bảng lớn: xem trọn mọi phim trong hàng chờ, cập nhật trực tiếp; chọn nhiều phim để tạm dừng / thử lại / xóa."""
+    COLS = ["#", "Tên phim", "Trạng thái", "Tiến độ", "Chi tiết", "Thư mục lưu"]
+
+    def __init__(self, page: "SearchPage"):
+        super().__init__(page)
+        self.page = page
+        self.setWindowTitle("Hàng chờ tải — tất cả phim")
+        self.resize(1000, 560)
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(10)
+        self.lb = QLabel(); self.lb.setObjectName("stage")
+        self.tb = QTableWidget(0, len(self.COLS)); self.tb.setHorizontalHeaderLabels(self.COLS)
+        self.tb.verticalHeader().setVisible(False)
+        self.tb.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tb.setSelectionBehavior(QAbstractItemView.SelectRows)
+        hh = self.tb.horizontalHeader()
+        hh.setSectionResizeMode(1, QHeaderView.Stretch); hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        for c, w in ((0, 40), (2, 100), (3, 70), (5, 190)):
+            self.tb.setColumnWidth(c, w)
+        self.tb.cellDoubleClicked.connect(self._open)
+        th = self.page.dthread
+        b_p = _btn("Tạm dừng", "ghost"); b_r = _btn("Tiếp tục / Thử lại", "ghost"); b_x = _btn("Xóa khỏi hàng chờ", "ghost")
+        b_p.clicked.connect(lambda: [th.pause(j) for j in self._selected() if j.state in ("queued", "running")])
+        b_r.clicked.connect(lambda: [th.resume(j) for j in self._selected()])
+        b_x.clicked.connect(lambda: [th.remove(j) for j in self._selected()])
+        b_dir = _btn("Mở thư mục", "ghost"); b_close = _btn("Đóng", "primary")
+        b_dir.clicked.connect(self.page._open_out); b_close.clicked.connect(self.close)
+        br = QHBoxLayout(); br.addWidget(b_p); br.addWidget(b_r); br.addWidget(b_x); br.addStretch(1)
+        br.addWidget(b_dir); br.addWidget(b_close)
+        hint = QLabel("Chọn nhiều dòng bằng Ctrl / Shift. Bấm đúp một dòng để mở thư mục chứa phim."); hint.setObjectName("hint")
+        v.addWidget(self.lb); v.addWidget(self.tb, 1); v.addWidget(hint); v.addLayout(br)
+
+    def _jobs(self):
+        return [r.job for r in self.page.rows.values()]
+
+    def _selected(self):
+        jobs = self._jobs()
+        return [jobs[r] for r in sorted({i.row() for i in self.tb.selectedIndexes()}) if r < len(jobs)]
+
+    def refresh(self):
+        jobs = self._jobs()
+        self.lb.setText(self.page.lb_qsum.text() or "Chưa có phim nào trong hàng chờ.")
+        self.tb.setRowCount(len(jobs))
+        for i, j in enumerate(jobs):
+            info = j.info or ("Đang chờ tới lượt" if j.state == "queued" else "")
+            if j.state == "done" and j.file:
+                info = os.path.basename(j.file)
+            vals = [str(i + 1), j.title, STATE_PILL.get(j.state, (j.state, ""))[0], f"{int(j.pct)}%", info, j.out_dir]
+            for c, val in enumerate(vals):
+                it = self.tb.item(i, c)
+                if it is None:
+                    it = QTableWidgetItem(); self.tb.setItem(i, c, it)
+                if it.text() != val:
+                    it.setText(val); it.setToolTip(val)
+
+    def _open(self, row, _col):
+        jobs = self._jobs()
+        if row >= len(jobs):
+            return
+        j = jobs[row]
+        if j.file and os.path.exists(j.file) and sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(j.file)])
+        elif os.path.isdir(j.out_dir):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(j.out_dir))
+
+
 # ====================================================================== trang
 class SearchPage(QWidget):
     def __init__(self, cfg: dict, save_cfg, log, providers_getter, bili: Bili | None = None):
@@ -388,6 +491,7 @@ class SearchPage(QWidget):
         self.source: tuple = ()          # ("search", từ khóa) hoặc ("browse", kiểu, mã mục)
         self._auto_browsed = False
         self._browse_again: int | None = None
+        self._old_jobs: list = []         # việc nền bị thay khi còn chạy: giữ tới khi xong (không huỷ giữa chừng)
         self._search_job: _Job | None = None
         self._tr_job: _Job | None = None
         self._img_pool = ThreadPoolExecutor(max_workers=6)
@@ -437,15 +541,15 @@ class SearchPage(QWidget):
         self.cb_dur = QComboBox(); self.cb_dur.addItems(DURATIONS)
         self.btn_go = _btn("🔍  Tìm", "primary")
         r1 = QHBoxLayout(); r1.setSpacing(8)
-        r1.addWidget(self.cb_site); r1.addWidget(self.ed_q, 1); r1.addWidget(self.btn_vi); r1.addWidget(self.cb_order)
-        r1.addWidget(self.cb_dur); r1.addWidget(self.btn_go)
-        r2 = QHBoxLayout(); r2.setSpacing(6)
-        lab = QLabel("Gợi ý:"); lab.setObjectName("hint"); r2.addWidget(lab)
+        r1.addWidget(self.cb_site); r1.addWidget(self.ed_q, 1); r1.addWidget(self.btn_vi); r1.addWidget(self.btn_go)
+        r2 = QHBoxLayout(); r2.setSpacing(4)
         for k in QUICK:
             b = QPushButton(k); b.setObjectName("chipBtn"); b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(f"Gợi ý: tìm “{k}”")
             b.clicked.connect(lambda _=False, k=k: (self.ed_q.setText(k), self._search(1)))
             r2.addWidget(b)
-        r2.addStretch(1)
+        self.cb_order.setFixedWidth(165); self.cb_dur.setFixedWidth(155)
+        r2.addStretch(1); r2.addWidget(self.cb_order); r2.addWidget(self.cb_dur)
         self.chk_tr = QCheckBox("Dịch tiêu đề sang tiếng Việt")
         self.chk_tr.setToolTip("AI dịch tiêu đề kết quả (dùng nhà cung cấp AI ở Cài đặt AI)")
         self.ed_link = QLineEdit()
@@ -462,10 +566,12 @@ class SearchPage(QWidget):
         self.cb_bcat.setToolTip("Mục (phân khu) của Bilibili")
         self.btn_browse = _btn("📂  Xem", "ghost", "Xem danh sách video theo mục, không cần gõ từ khóa")
         self.lb_browse = QLabel("Duyệt không cần gõ:"); self.lb_browse.setObjectName("hint")
-        self.cb_bcat.setMinimumWidth(220)
+        self.cb_bcat.setMinimumWidth(220); self.cb_bmode.setMinimumWidth(205)
+        r3 = QHBoxLayout(); r3.setSpacing(8)
         for w in (self.lb_browse, self.cb_bmode, self.cb_bcat, self.btn_browse):
-            r2.addWidget(w)
-        tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r0)
+            r3.addWidget(w)
+        r3.addStretch(1)
+        tv.addLayout(r1); tv.addLayout(r2); tv.addLayout(r3); tv.addLayout(r0)
 
         # ---- kết quả
         res, rv = _card("Kết quả", None)
@@ -495,6 +601,8 @@ class SearchPage(QWidget):
         # ---- hàng chờ tải (tùy chọn gom vào một hộp thoại, danh sách là phần chính)
         side, sv = _card("Hàng chờ tải", None)
         side.setFixedWidth(400)
+        self.btn_all = _btn("Xem tất cả", "link", "Mở bảng lớn xem toàn bộ phim: đang tải, chờ, tạm dừng, đã dừng, xong, lỗi")
+        sv.itemAt(0).layout().addWidget(self.btn_all)
         self.opt_dlg = DownloadOptions(self)
         ol = self.opt_dlg.lay
         self.ed_out = QLineEdit(); self.btn_out = _btn("Chọn…", "ghost")
@@ -529,7 +637,7 @@ class SearchPage(QWidget):
         arow = QHBoxLayout(); arow.setSpacing(6); arow.addWidget(self.lb_acc, 1); arow.addWidget(self.btn_acc)
         sv.addLayout(arow)
         self.q_host = QWidget(); self.q_lay = QVBoxLayout(self.q_host)
-        self.q_lay.setContentsMargins(0, 0, 0, 0); self.q_lay.setSpacing(8); self.q_lay.addStretch(1)
+        self.q_lay.setContentsMargins(0, 0, 0, 0); self.q_lay.setSpacing(6); self.q_lay.addStretch(1)
         self.q_empty = QLabel("Chưa có phim nào.\nBấm “⬇ Tải” ở một kết quả, hoặc dán link rồi bấm “Tải link này”.")
         self.q_empty.setObjectName("muted"); self.q_empty.setAlignment(Qt.AlignCenter)
         self.q_empty.setWordWrap(True); self.q_empty.setMinimumHeight(120)
@@ -537,6 +645,7 @@ class SearchPage(QWidget):
         qs = QScrollArea(); qs.setWidgetResizable(True); qs.setWidget(self.q_host)
         qs.setFrameShape(QFrame.NoFrame); qs.setObjectName("scroll")
         qs.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.q_scroll = qs
         sv.addWidget(qs, 1)
         self.lb_qsum = QLabel(""); self.lb_qsum.setObjectName("stage"); self.lb_qsum.setWordWrap(True)
         sv.addWidget(self.lb_qsum)
@@ -550,10 +659,11 @@ class SearchPage(QWidget):
         brow.addWidget(b1); brow.addWidget(b3); brow.addStretch(1); brow.addWidget(self.btn_pause_all); brow.addWidget(self.btn_resume_all)
         sv.addLayout(brow)
 
-        cols = QHBoxLayout(); cols.setSpacing(14)
-        cols.addWidget(res, 1); cols.addWidget(side)
-        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(14)
-        root.addWidget(top); root.addLayout(cols, 1)
+        # Hàng chờ tải là cột riêng chạy hết chiều cao bên phải -> nhìn được nhiều phim cùng lúc
+        left = QVBoxLayout(); left.setSpacing(14)
+        left.addWidget(top); left.addWidget(res, 1)
+        root = QHBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(14)
+        root.addLayout(left, 1); root.addWidget(side)
 
         # ---- sự kiện
         self.btn_go.clicked.connect(lambda: self._search(1))
@@ -575,6 +685,7 @@ class SearchPage(QWidget):
         self.btn_pause_all.clicked.connect(self._pause_all)
         self.btn_resume_all.clicked.connect(self._resume_all)
         b3.clicked.connect(self._clear_done)
+        self.btn_all.clicked.connect(self._show_all)
         for w in (self.cb_order, self.cb_dur):
             w.currentIndexChanged.connect(lambda _=0: self.source[:1] == ("search",) and self._search(1))
         self._update_pager()
@@ -626,7 +737,26 @@ class SearchPage(QWidget):
         self.btn_go.setEnabled(False)
         self._search_job = _Job(lambda: self.bili.search(kw, page, order, dur))
         self._search_job.result.connect(self._on_results)
+        self._search_job.finished.connect(self._run_pending)
         self._search_job.start()
+
+    def _keep(self, job, drop: bool = True):
+        """Không để Python huỷ một QThread còn đang chạy (Qt sẽ tắt cả app: “QThread: Destroyed while thread
+        is still running”). drop=True: bỏ kết quả về sau (dịch tiêu đề/từ khóa cũ); False: vẫn dùng (lấy tập, tải link)."""
+        if job is not None and job.isRunning():
+            if drop:
+                try:
+                    job.result.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            self._old_jobs.append(job)
+            job.finished.connect(lambda j=job: self._old_jobs.remove(j) if j in self._old_jobs else None)
+
+    def _run_pending(self):
+        """Lựa chọn duyệt đổi trong lúc đang tải: chạy lại khi luồng tải THỰC SỰ xong."""
+        if self._browse_again is not None and not (self._search_job and self._search_job.isRunning()):
+            again, self._browse_again = self._browse_again, None
+            self._browse(again)
 
     def _goto(self, page: int):
         if self.source[:1] == ("browse",):
@@ -655,6 +785,7 @@ class SearchPage(QWidget):
         self.btn_go.setEnabled(False); self.btn_browse.setEnabled(False)
         self._search_job = _Job(lambda: self.bili.browse(mode, rid, page))
         self._search_job.result.connect(self._on_results)
+        self._search_job.finished.connect(self._run_pending)
         self._search_job.start()
         self._store()
 
@@ -678,10 +809,8 @@ class SearchPage(QWidget):
 
     def _on_results(self, res, err):
         self.btn_go.setEnabled(True); self.btn_browse.setEnabled(True)
-        if self._browse_again is not None:     # người dùng đã đổi lựa chọn trong lúc tải: bỏ kết quả cũ, tải lại
-            again, self._browse_again = self._browse_again, None
-            QTimer.singleShot(0, lambda: self._browse(again))
-            return
+        if self._browse_again is not None:     # đã đổi lựa chọn trong lúc tải: bỏ kết quả cũ,
+            return                             # _run_pending tải lại khi luồng xong hẳn
         if err:
             self.lb_count.setText("")
             self._show_empty(f"✖ {err}")
@@ -768,6 +897,7 @@ class SearchPage(QWidget):
             t.cb.log = lambda m: None
             return t.translate_cues(cues)
         self.lb_count.setText(self.lb_count.text() + " · đang dịch tiêu đề…")
+        self._keep(self._tr_job)
         self._tr_job = _Job(run)
         self._tr_job.result.connect(lambda res, err, gen=gen: self._on_titles(gen, res, err))
         self._tr_job.start()
@@ -800,6 +930,7 @@ class SearchPage(QWidget):
         self.lb_count.setText("đang dịch từ khóa…")
         sys_p = ("Bạn chuyển từ khóa tìm phim tiếng Việt thành từ khóa tìm kiếm tiếng Trung giản thể "
                  "mà người Trung hay dùng trên Bilibili. Chỉ trả về đúng từ khóa, không giải thích, không ngoặc kép.")
+        self._keep(self._kw_job)
         self._kw_job = _Job(lambda: prov.chat(sys_p, text))
         self._kw_job.result.connect(self._on_kw)
         self._kw_job.start()
@@ -843,6 +974,7 @@ class SearchPage(QWidget):
             bvid, p = self.bili.resolve(text)
             meta = self.bili.video_meta(bvid)
             return bvid, p, meta
+        self._keep(self._link_job, drop=False)
         self._link_job = _Job(work)
         self._link_job.result.connect(self._on_link)
         self._link_job.start()
@@ -872,6 +1004,7 @@ class SearchPage(QWidget):
 
     def _ask_download(self, v: Video):
         self.lb_count.setText("đang lấy danh sách tập…")
+        self._keep(self._parts_job, drop=False)
         self._parts_job = _Job(lambda: self.bili.parts(v.bvid))
         self._parts_job.result.connect(lambda res, err, v=v: self._on_parts(v, res, err))
         self._parts_job.start()
@@ -920,6 +1053,7 @@ class SearchPage(QWidget):
             bvid, p = self.bili.resolve(url)
             title, parts = self.bili.parts(bvid)
             return bvid, p, title, parts
+        self._keep(getattr(self, '_sublink_job', None), drop=False)
         self._sublink_job = _Job(work)
         self._sublink_job.result.connect(self._on_sub_link)
         self._sublink_job.start()
@@ -937,6 +1071,7 @@ class SearchPage(QWidget):
 
     def _ask_subtitles(self, v: Video):
         self.lb_count.setText("đang lấy danh sách tập…")
+        self._keep(getattr(self, '_subparts_job', None), drop=False)
         self._subparts_job = _Job(lambda: self.bili.parts(v.bvid))
         self._subparts_job.result.connect(lambda res, err, v=v: self._on_sub_parts(v, res, err))
         self._subparts_job.start()
@@ -982,6 +1117,7 @@ class SearchPage(QWidget):
         if not check:
             return
         self.lb_acc.setText("Bilibili: đang kiểm tra đăng nhập…")
+        self._keep(getattr(self, '_acc_job', None), drop=False)
         self._acc_job = _Job(self.bili.account)
         self._acc_job.result.connect(self._on_account)
         self._acc_job.start()
@@ -1023,6 +1159,8 @@ class SearchPage(QWidget):
             return
         if row:
             row.refresh()
+            if job.state == "running":                       # tự cuộn tới phim đang tải
+                QTimer.singleShot(0, lambda r=row: self.q_scroll.ensureWidgetVisible(r, 0, 40))
         if job.state == "done":
             self.main_log(f"✔ Đã tải: {job.file}")
         elif job.state == "error":
@@ -1065,7 +1203,20 @@ class SearchPage(QWidget):
         self.btn_opts.setToolTip("Bấm để đổi: thư mục lưu, chất lượng, tải kèm phụ đề / ảnh bìa, cookie\n"
                                  + str(folder))
 
+    def _show_all(self):
+        if getattr(self, "_all_dlg", None) is None:
+            self._all_dlg = QueueDialog(self)
+        self._all_dlg.refresh()
+        self._all_dlg.show(); self._all_dlg.raise_(); self._all_dlg.activateWindow()
+
     def _summary(self):
+        n = len(self.rows)
+        self.btn_all.setText(f"Xem tất cả ({n})" if n else "Xem tất cả")
+        self._summary_text()
+        if getattr(self, "_all_dlg", None) is not None and self._all_dlg.isVisible():
+            self._all_dlg.refresh()
+
+    def _summary_text(self):
         jobs = [r.job for r in self.rows.values()]
         if not jobs:
             self.lb_qsum.setText("")
@@ -1078,6 +1229,8 @@ class SearchPage(QWidget):
             parts.append(f"{c['queued']} đang chờ")
         if c["paused"]:
             parts.append(f"{c['paused']} tạm dừng")
+        if c["stopped"]:
+            parts.append(f"{c['stopped']} đã dừng")
         if c["error"]:
             parts.append(f"{c['error']} lỗi")
         self.lb_qsum.setText(" · ".join(parts))

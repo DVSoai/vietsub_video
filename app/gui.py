@@ -1539,7 +1539,33 @@ def _dark_title_bar(w):
         pass
 
 
+def _crash_log():
+    """Ghi lý do app tự tắt vào data/loi_app.log (lỗi Python, lỗi Qt nghiêm trọng, lỗi bộ nhớ)."""
+    import datetime
+    import faulthandler
+    import traceback
+    from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+    try:
+        DATA.mkdir(parents=True, exist_ok=True)
+        f = open(DATA / "loi_app.log", "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    f.write(f"\n===== mở app {datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    faulthandler.enable(f)                                   # lỗi bộ nhớ / dừng cưỡng bức: ghi vết ngăn xếp
+
+    def hook(t, v, tb):
+        f.write(f"[{datetime.datetime.now():%H:%M:%S}] LỖI PYTHON:\n" + "".join(traceback.format_exception(t, v, tb)))
+        sys.__excepthook__(t, v, tb)
+    sys.excepthook = hook
+
+    def qt_msg(kind, _ctx, msg):
+        if kind in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg) or "Destroyed while thread" in msg:
+            f.write(f"[{datetime.datetime.now():%H:%M:%S}] QT: {msg}\n")
+    qInstallMessageHandler(qt_msg)
+
+
 def main():
+    _crash_log()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(theme.app_font())
