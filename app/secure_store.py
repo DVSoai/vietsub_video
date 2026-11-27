@@ -35,7 +35,28 @@ def protect_config(cfg: dict) -> dict:
         keys = pc.pop("keys", "")
         if keys:
             pc["keys_dpapi"] = base64.b64encode(_crypt(keys.encode("utf-8"), False)).decode("ascii")
+    login = result.get("bili_login")
+    if isinstance(login, dict) and login.get("cookies"):
+        login["cookies_dpapi"] = base64.b64encode(_crypt(login.pop("cookies").encode("utf-8"), False)).decode("ascii")
     return result
+
+
+def _restore_login(result: dict, strict: bool) -> bool:
+    """Giải mã cookie đăng nhập Bilibili. Lỗi: strict -> ném lỗi; không strict -> bỏ đăng nhập, trả False."""
+    login = result.get("bili_login")
+    if not isinstance(login, dict) or "cookies_dpapi" not in login:
+        return True
+    blob = login.pop("cookies_dpapi")
+    try:
+        if sys.platform != "win32":
+            raise RuntimeError("Bilibili login is protected by Windows DPAPI")
+        login["cookies"] = _crypt(base64.b64decode(blob, validate=True), True).decode("utf-8")
+        return True
+    except Exception:  # noqa: BLE001
+        if strict:
+            raise
+        login["cookies"] = ""
+        return False
 
 def restore_config(cfg: dict) -> dict:
     result = copy.deepcopy(cfg)
@@ -44,6 +65,7 @@ def restore_config(cfg: dict) -> dict:
             if sys.platform != "win32":
                 raise RuntimeError("API keys are protected by Windows DPAPI")
             pc["keys"] = _crypt(base64.b64decode(pc.pop("keys_dpapi"), validate=True), True).decode("utf-8")
+    _restore_login(result, strict=True)
     return result
 
 
@@ -64,4 +86,5 @@ def restore_config_partial(cfg: dict) -> tuple[dict, list[str]]:
             pc["keys"] = ""
             pc["enabled"] = False
             failed.append(name)
+    _restore_login(result, strict=False)   # mất đăng nhập Bilibili thì chỉ cần quét QR lại, không cần hỏi
     return result, failed

@@ -33,7 +33,14 @@ Với Bilibili:
 4. **Dán link để tải luôn:** dán vào ô "Hoặc dán link…" link video, link chia sẻ `b23.tv` trong app Bilibili, mã `BV…` hoặc `av…`, rồi bấm **Tải link này**. Link có `?p=3` sẽ tải đúng phần 3.
 5. Bấm **⬇ Tải** ở video muốn tải. Video nhiều tập (P1, P2… hoặc tuyển tập) sẽ hiện hộp thoại để chọn tập. Các tập của một bộ phim được lưu chung vào một thư mục riêng.
 6. Hàng chờ bên phải tải lần lượt từng phim, có tốc độ và thời gian còn lại. File lưu thành `.mp4`, tên file là tên đang hiển thị trong app. Có thể tick **Tải kèm ảnh bìa**, hoặc chọn chất lượng **Chỉ âm thanh (.m4a)**.
-7. Phim nào lỗi sẽ có nút **📋 Sao chép lỗi**; bấm chuột phải vào dòng đó còn có thêm "Sao chép link video".
+7. Mỗi phim trong hàng chờ có nút **⏸ Tạm dừng**, **▶ Tiếp tục** (tải tiếp từ chỗ đã dừng, không tải lại từ đầu) và **✕ Bỏ** (bỏ phim đang chờ; phim đang tải dở thì dừng và xoá phần đã tải). Phim lỗi có nút **↻ Tải lại**.
+8. Phim nào lỗi sẽ có nút **📋 Sao chép lỗi**; bấm chuột phải vào dòng đó còn có thêm "Sao chép link video".
+
+**Lấy phụ đề có sẵn (Bilibili):**
+- Bấm **📝 Phụ đề** ở một video, hoặc dán link rồi bấm **📝 Lấy phụ đề**. Hộp thoại liệt kê các bản phụ đề của video: bản người đăng làm và bản Bilibili tự tạo bằng AI (ghi rõ "AI"). Xem trước lời thoại, chép chữ, hoặc lưu thành **SRT, VTT, TXT** hay **JSON gốc**. Video nhiều phần thì chọn phần ở ô trên cùng.
+- Tick **Tải kèm phụ đề có sẵn (.srt)** để mỗi phim tải về có thêm `tên.zh.srt` (và các ngôn ngữ khác nếu có). Tab Dịch phụ đề dùng luôn file này, không phải nghe giọng.
+- Bilibili chỉ đưa phụ đề cho **tài khoản đã đăng nhập**. Bấm **🔑 Đăng nhập** ở thẻ Hàng chờ tải, rồi quét mã QR bằng app Bilibili trên điện thoại (hoặc dán cookie `SESSDATA`). Cookie đăng nhập chỉ lưu trong `data/settings.json` và được Windows mã hoá bằng DPAPI. Tài khoản VIP còn tải được 1080P+ và 4K.
+- Chỉ lấy được phụ đề video đã có sẵn. Chữ in cứng trong hình thì không lấy được; khi đó dùng chức năng tạo phụ đề từ video ở tab Dịch phụ đề.
 
 Lưu ý:
 - Không cần đăng nhập vẫn tải được tới **1080p**: app gửi kèm tham số `try_look=1`, chế độ "xem thử" của trình phát Bilibili. Các mức 1080P+, 4K và 60fps chỉ dành cho tài khoản VIP (大会员).
@@ -139,6 +146,7 @@ Thẻ **Khung hình, màu & âm thanh** (kiểu CapCut): tốc độ video, khun
 | `app/transcribe.py` | Tách tiếng bằng ffmpeg, cắt đoạn theo chỗ im lặng, cho Gemini trên Vertex nghe và chép lời |
 | `app/translator.py` | Chia batch, chạy nhiều luồng, giới hạn RPM, thử lại, dịch bù |
 | `app/bilibili.py` | Tìm kiếm Bilibili (cookie khách buvid3, WBI dự phòng), danh sách tập, tải bằng yt-dlp |
+| `app/bili_dialogs.py` | Đăng nhập Bilibili bằng mã QR, hộp thoại lấy phụ đề (SRT / VTT / TXT / JSON) |
 | `app/sources.py` | Danh sách trang được hỗ trợ, lấy link từ đoạn chữ chia sẻ, mở link rút gọn |
 | `app/search_page.py` | Tab Tìm & tải phim |
 | `app/gui.py` | Giao diện PySide6 (khung chính, trang Dịch phụ đề) |
