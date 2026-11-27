@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QCheckBox, QComboBox, QDialog, QMenu, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
@@ -234,6 +234,11 @@ class JobRow(QFrame):
             return
         self._compact = compact
         btns = (self.btn_pause, self.btn_resume, self.btn_copy, self.btn_remove)
+        if not hasattr(self, "_icons"):
+            self._icons = {b: b.icon() for b in btns}
+        for b in btns:                                   # dòng gọn: chỉ chữ, lề nhỏ -> vừa khung trên Windows
+            b.setIcon(QIcon() if compact else self._icons[b])
+            b.setStyleSheet(("padding: 2px 5px;" if compact else "") + ("color:#8a94a7" if b is self.btn_remove else ""))
         for b in btns:
             (self.trow if compact else self.crow).removeWidget(b)
         if compact:
@@ -548,7 +553,12 @@ class SearchPage(QWidget):
             b.setToolTip(f"Gợi ý: tìm “{k}”")
             b.clicked.connect(lambda _=False, k=k: (self.ed_q.setText(k), self._search(1)))
             r2.addWidget(b)
-        self.cb_order.setFixedWidth(165); self.cb_dur.setFixedWidth(155)
+        # độ rộng theo font của máy (Windows rộng hơn Linux) thay vì cố định px
+        for cb in (self.cb_order, self.cb_dur):
+            cb.ensurePolished()                          # áp stylesheet (cỡ chữ) trước khi đo
+            fm = cb.fontMetrics()
+            widest = max((fm.horizontalAdvance(cb.itemText(i)) for i in range(cb.count())), default=80)
+            cb.setFixedWidth(widest + 46)                # chữ dài nhất + lề + mũi tên, theo font thật của máy
         r2.addStretch(1); r2.addWidget(self.cb_order); r2.addWidget(self.cb_dur)
         self.chk_tr = QCheckBox("Dịch tiêu đề sang tiếng Việt")
         self.chk_tr.setToolTip("AI dịch tiêu đề kết quả (dùng nhà cung cấp AI ở Cài đặt AI)")

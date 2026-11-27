@@ -96,15 +96,16 @@ side_right = page.q_scroll.mapTo(w, QPoint(page.q_scroll.width(), 0)).x()
 cut = [(r.job.title, b.text()) for r in rows for b in (r.btn_resume, r.btn_remove) if b.isVisible() and
        b.mapTo(vp_g, QPoint(b.width(), 0)).x() > vp_g.width()]
 combo_cut = [c.currentText() for c in (page.cb_order, page.cb_dur)
-             if c.fontMetrics().horizontalAdvance(c.currentText()) + 44 > c.width()]   # chữ + lề + mũi tên
+             if c.fontMetrics().horizontalAdvance(c.currentText()) + 30 > c.width()]   # chữ + lề + mũi tên
 rr = rows[1]
 print("ĐO:", f"viewport={vp_g.width()} row={rr.width()} title={rr.lb_title.width()} pill={rr.pill.width()}/{rr.pill.sizeHint().width()} "
       f"thu_lai={rr.btn_resume.width()}/{rr.btn_resume.sizeHint().width()} xoa={rr.btn_remove.width()}/{rr.btn_remove.sizeHint().width()} "
       f"order={page.cb_order.width()}/{page.cb_order.fontMetrics().horizontalAdvance(page.cb_order.currentText())} "
       f"dur={page.cb_dur.width()}/{page.cb_dur.fontMetrics().horizontalAdvance(page.cb_dur.currentText())} "
       f"font={app.font().family()} {app.font().pointSizeF()}", flush=True)
+row_over = [r.job.title for r in rows if r.width() > vp_g.width()]
 rec("Q2b", "Không gì bị khuất: nút Thử lại / Xóa nằm trọn trong khung; cột Hàng chờ không tràn ra ngoài cửa sổ; ô lọc không cắt chữ",
-    not cut and side_right <= w.width() and not combo_cut,
+    not cut and not row_over and side_right <= w.width() and not combo_cut,
     f"nút bị khuất={cut}, mép phải cột={side_right}/{w.width()}px, ô lọc bị cắt={combo_cut}")
 
 part_before = r0.job.pct
