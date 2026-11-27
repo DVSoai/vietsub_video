@@ -60,10 +60,6 @@ jobs:
       - name: test_browse_no_crash (đổi mục liên tục khi đang dịch tiêu đề)
         if: always()
         run: python tests/run_check.py tests/test_browse_no_crash.py
-      - name: test_download_queue (offscreen, chỉ để so sánh font)
-        if: always()
-        continue-on-error: true
-        run: python tests/run_check.py tests/test_download_queue.py
       - name: Đặt màn hình máy ảo 1920x1080 (mặc định 1024x768, nhỏ hơn màn hình người dùng)
         if: always()
         continue-on-error: true
