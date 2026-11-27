@@ -64,6 +64,13 @@ jobs:
         if: always()
         continue-on-error: true
         run: python tests/run_check.py tests/test_download_queue.py
+      - name: Đặt màn hình máy ảo 1920x1080 (mặc định 1024x768, nhỏ hơn màn hình người dùng)
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Get-DisplayResolution
       - name: test_download_queue (khung Hàng chờ tải 1366x768, vẽ bằng Windows thật như máy người dùng)
         if: always()
         env:
