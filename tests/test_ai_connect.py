@@ -188,24 +188,30 @@ rec("A6", "Lưu cấu hình rồi mở lại app: key còn nguyên" + (", file k
     keys2.endswith("KKKK") and (("KKKKKKKK" not in raw) if WIN else True),
     f"file có 'keys_dpapi'={'keys_dpapi' in raw}, có key chữ thường={'KKKKKKKK' in raw}")
 
-# ---------------------------------------------------------------- A7 tab 5 · Quản lý AI
+# ---------------------------------------------------------------- A7 trang Cài đặt AI (bảng nhà cung cấp)
 w2.resize(1366, 728); w2.show(); w2._go_page(4); pump(0.5)
-st = w2.ai_status.text()
-w2.grab().save(str(OUT / "tab_quan_ly_ai.png"))
+st = {n: w2._ai_pills[n].text() for n in PROVIDERS}
+w2.grab().save(str(OUT / "tab_cai_dat_ai.png"))
 nav_ok = all(b.isVisible() and b.width() > 0 for b in w2.nav_btns)
-rec("A7", "Tab 5 · Quản lý AI hiện trạng thái từng nhà; 5 nút tab hiện đủ ở 1366 px",
-    "Groq (miễn phí): Đang bật" in st and nav_ok, f"{len(st.splitlines())} dòng, nav rộng={[b.width() for b in w2.nav_btns]}")
-w2.ai_provider.setCurrentText(NV); pump(0.1)
-w2.ai_model.setCurrentText("moonshotai/kimi-k3.1-pro"); w2.ai_keys.setText("nvapi-" + "e" * 40); w2.ai_enabled.setChecked(True)
-w2._save_ai_editor(); pump(0.1)
+rec("A7", "Cài đặt AI: bảng hiện trạng thái từng nhà; 7 nút điều hướng bên trái hiện đủ ở 1366×728",
+    st[GROQ].startswith("Đang bật") and w2._ai_checks[GROQ].isChecked() and nav_ok and len(w2.nav_btns) == 7,
+    f"Groq='{st[GROQ]}', nav cao={[b.height() for b in w2.nav_btns]}")
+w2.ai_table.selectRow(list(PROVIDERS).index(NV)); pump(0.2)
+picked = w2.cb_provider.currentText()
+w2.cb_model.setCurrentText("moonshotai/kimi-k3.1-pro"); w2.ed_keys.setPlainText("nvapi-" + "e" * 40)
+w2._ai_checks[NV].setChecked(True); pump(0.3)
 pe = dict(w2.cfg["per_provider"][NV])
 in_tab2 = [p.label for p in w2._make_translate_providers()]
-ANSWER["q"] = QMessageBox.Yes; w2._remove_ai_keys(); pump(0.1)
+pill_on = w2._ai_pills[NV].text()
+ANSWER["q"] = QMessageBox.Yes; w2._remove_ai_keys(); pump(0.3)
 pr = dict(w2.cfg["per_provider"][NV])
-rec("A7b", "Tab 5: lưu model/key/bật cho NVIDIA -> tab Dịch dùng ngay; Xoá toàn bộ key -> tắt và hết key",
-    pe.get("keys", "").endswith("eeee") and pe.get("enabled") and any("NVIDIA" in l for l in in_tab2)
-    and pr.get("keys") == "" and not pr.get("enabled") and w2.ai_keys.text() == "",
-    f"sau lưu: bật={pe.get('enabled')}, model={pe.get('model')}; tab Dịch={in_tab2}; sau xoá: key={pr.get('keys')!r}")
+rec("A7b", "Cài đặt AI: bấm dòng NVIDIA -> thẻ cấu hình nạp NVIDIA; nhập key + tick Dùng -> tab Dịch dùng ngay; "
+    "Xoá toàn bộ key -> tắt và hết key",
+    picked == NV and pe.get("keys", "").endswith("eeee") and pe.get("enabled") and any("NVIDIA" in l for l in in_tab2)
+    and pill_on.startswith("Đang bật") and pr.get("keys") == "" and not pr.get("enabled")
+    and w2.ed_keys.toPlainText() == "" and not w2._ai_checks[NV].isChecked() and "NVIDIA" not in w2.lb_ai_short.text(),
+    f"chọn={picked}; sau lưu: bật={pe.get('enabled')}, model={pe.get('model')}, nhãn='{pill_on}'; tab Dịch={in_tab2}; "
+    f"sau xoá: key={pr.get('keys')!r}")
 ANSWER["q"] = QMessageBox.No
 w2.close(); pump(0.3)
 

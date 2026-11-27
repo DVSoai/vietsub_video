@@ -54,6 +54,9 @@ jobs:
       - name: test_bili_subs_queue (phụ đề Bilibili, tạm dừng / bỏ phim trong hàng chờ)
         if: always()
         run: python tests/run_check.py tests/test_bili_subs_queue.py
+      - name: test_ui_redesign (điều hướng, cắt video, sửa phụ đề, tự động từ link)
+        if: always()
+        run: python tests/run_check.py tests/test_ui_redesign.py
       - name: test_free_keys_dialog
         if: always()
         run: python tests/run_check.py tests/test_free_keys_dialog.py

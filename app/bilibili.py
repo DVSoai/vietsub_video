@@ -574,6 +574,7 @@ class DownloadJob:
     auto_title: bool = False       # chưa biết tên -> lấy tiêu đề gốc từ trang (trang ngoài Bilibili)
     cookies_browser: str = ""      # "firefox" | "edge" | "chrome" | "" (Douyin hay cần)
     subs: bool = False             # tải kèm phụ đề có sẵn của Bilibili (.zh.srt…)
+    thumb_url: str = ""            # ảnh bìa để hiện trong hàng chờ
     state: str = "queued"          # queued | running | paused | done | error | stopped | removed
     pct: float = 0.0
     info: str = ""
@@ -730,8 +731,14 @@ class Downloader:
             if not tracks:
                 return " · video không có phụ đề"
             for code, t in tracks.items():
-                with open(f"{base}.{code}.srt", "w", encoding="utf-8") as f:
-                    f.write(subs_to_srt(self.bili.subtitle_body(t)))
+                text, path = subs_to_srt(self.bili.subtitle_body(t)), f"{base}.{code}.srt"
+                try:
+                    same = open(path, encoding="utf-8").read() == text
+                except OSError:
+                    same = False
+                if not same:          # không ghi lại file y hệt: giữ thời gian sửa để bản dịch cũ vẫn được dùng lại
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(text)
             return " · phụ đề: " + ", ".join(f"{c}{' (AI)' if t.ai else ''}" for c, t in tracks.items())
         except Exception as e:  # noqa: BLE001
             self.log(f"  ⚠ Không lấy được phụ đề ({job.title}): {e}")
