@@ -1,10 +1,11 @@
 """Tab “Tìm & tải phim”: tìm video trên Bilibili như search.bilibili.com rồi tải về máy."""
 from __future__ import annotations
 
+import json
 import os
-import queue
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +23,9 @@ from PySide6.QtWidgets import (
 from .sources import SITES, extract, search_url
 from .bilibili import (
     BROWSE_CATS, BROWSE_MODES, DURATIONS, ORDERS, QUALITIES, Bili, BiliError, DownloadJob, Downloader, Part, Video, fmt_count,
+    remove_temps,
 )
+from .bili_dialogs import LoginDialog, SubtitleDialog
 
 QUICK = ["仙侠短剧", "修仙", "古装剧", "玄幻", "穿越", "短剧合集", "武侠"]
 CARD_W = 214
@@ -73,6 +76,7 @@ class _Bus(QObject):
 # ====================================================================== thẻ video
 class VideoCard(QFrame):
     download = Signal(object)
+    subtitles = Signal(object)
 
     def __init__(self, v: Video):
         super().__init__()
@@ -99,9 +103,11 @@ class VideoCard(QFrame):
         lay.addLayout(body)
         row = QHBoxLayout(); row.setContentsMargins(12, 2, 12, 0); row.setSpacing(6)
         self.btn_dl = _btn("⬇  Tải", "small"); self.btn_web = _btn("Mở web", "link")
-        row.addWidget(self.btn_dl); row.addStretch(1); row.addWidget(self.btn_web)
+        self.btn_sub = _btn("📝 Phụ đề", "link", "Lấy phụ đề có sẵn của video (SRT, VTT, TXT, JSON)")
+        row.addWidget(self.btn_dl); row.addWidget(self.btn_sub); row.addStretch(1); row.addWidget(self.btn_web)
         lay.addLayout(row)
         self.btn_dl.clicked.connect(lambda: self.download.emit(self.v))
+        self.btn_sub.clicked.connect(lambda: self.subtitles.emit(self.v))
         self.btn_web.clicked.connect(lambda: webbrowser.open(self.v.url))
         _elide(self.lb_meta, meta, CARD_W - 24)
         self.set_titles()
@@ -164,6 +170,10 @@ class PartsDialog(QDialog):
 
 # ====================================================================== dòng trong hàng chờ
 class JobRow(QFrame):
+    pause = Signal(object)
+    resume = Signal(object)
+    remove = Signal(object)
+
     def __init__(self, job: DownloadJob):
         super().__init__()
         self.job = job
@@ -176,7 +186,16 @@ class JobRow(QFrame):
         self.lb_info.setContextMenuPolicy(Qt.NoContextMenu)
         self.btn_copy = _btn("📋 Sao chép lỗi", "link", "Chép toàn bộ lỗi để gửi cho người hỗ trợ")
         self.btn_copy.clicked.connect(self._copy)
-        crow = QHBoxLayout(); crow.setContentsMargins(0, 0, 0, 0); crow.addStretch(1); crow.addWidget(self.btn_copy)
+        self.btn_pause = _btn("⏸ Tạm dừng", "link", "Tạm dừng phim này; bấm Tiếp tục để tải tiếp từ chỗ dừng")
+        self.btn_resume = _btn("▶ Tiếp tục", "link")
+        self.btn_remove = _btn("✕ Bỏ", "link", "Bỏ phim này khỏi hàng chờ (phim đang tải dở thì xoá phần đã tải)")
+        self.btn_pause.clicked.connect(lambda: self.pause.emit(self.job))
+        self.btn_resume.clicked.connect(lambda: self.resume.emit(self.job))
+        self.btn_remove.clicked.connect(lambda: self.remove.emit(self.job))
+        crow = QHBoxLayout(); crow.setContentsMargins(0, 0, 0, 0); crow.setSpacing(2)
+        for b in (self.btn_pause, self.btn_resume, self.btn_remove):
+            crow.addWidget(b)
+        crow.addStretch(1); crow.addWidget(self.btn_copy)
         v.addWidget(self.lb_title); v.addWidget(self.bar); v.addWidget(self.lb_info); v.addLayout(crow)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
@@ -208,49 +227,100 @@ class JobRow(QFrame):
 
     def refresh(self):
         j = self.job
-        icon = {"queued": "⏳", "running": "⬇", "done": "✔", "error": "✖", "stopped": "■"}[j.state]
+        icon = {"queued": "⏳", "running": "⬇", "paused": "⏸", "done": "✔", "error": "✖", "stopped": "■",
+                "removed": "✕"}.get(j.state, "•")
         _elide(self.lb_title, f"{icon}  {j.title}", 300)
         self.bar.setValue(int(j.pct))
         info = j.info or {"queued": "Đang chờ", "stopped": "Đã dừng"}.get(j.state, "")
+        if j.state == "running" and j.cancel:
+            info = "Đang dừng…"
         self.btn_copy.setVisible(j.state == "error")
+        self.btn_pause.setVisible(j.state in ("queued", "running") and not j.cancel)
+        self.btn_resume.setVisible(j.state in ("paused", "stopped", "error"))
+        self.btn_resume.setText("▶ Tiếp tục" if j.state in ("paused", "stopped") else "↻ Tải lại")
+        self.btn_remove.setVisible(j.cancel != "remove")
+        self.btn_remove.setText("✕ Xoá khỏi danh sách" if j.state == "done" else "✕ Bỏ")
         _elide(self.lb_info, info, 300)
         self.lb_info.setToolTip(j.info)
-        color = {"done": "#21c49a", "error": "#ef5d6c", "stopped": "#f2b84b"}.get(j.state, "")
+        color = {"done": "#21c49a", "error": "#ef5d6c", "stopped": "#f2b84b", "paused": "#f2b84b"}.get(j.state, "")
         self.lb_info.setStyleSheet(f"color:{color}" if color else "")
 
 
 # ====================================================================== luồng tải
 class DownloadThread(QThread):
+    """Tải lần lượt từng phim. Hàng chờ là danh sách (không phải queue) để tạm dừng / bỏ được phim đang chờ."""
+
     def __init__(self, bus: _Bus, log, bili: Bili):
         super().__init__()
-        self.q: "queue.Queue[DownloadJob]" = queue.Queue()
+        self.pending: list[DownloadJob] = []
+        self.cv = threading.Condition()
         self.bus = bus
         self.dl = Downloader(on_update=lambda j: bus.job.emit(j), log=log, bili=bili)
+        self.current: DownloadJob | None = None
         self._quit = False
 
     def add(self, job: DownloadJob):
-        self.q.put(job)
+        with self.cv:
+            if job not in self.pending:
+                self.pending.append(job)
+            self.cv.notify()
+
+    def _take(self, job: DownloadJob) -> bool:
+        with self.cv:
+            if job in self.pending:
+                self.pending.remove(job)
+                return True
+        return False
+
+    def pause(self, job: DownloadJob):
+        if job is self.current:
+            job.cancel = "pause"                      # luồng tải tự dừng và báo "paused"
+            self.bus.job.emit(job)
+        elif self._take(job):
+            job.state, job.info = "paused", "Đã tạm dừng · chưa tải"
+            self.bus.job.emit(job)
+
+    def resume(self, job: DownloadJob):
+        if job.state not in ("paused", "stopped", "error"):
+            return
+        job.cancel, job.state, job.info = "", "queued", ""
+        self.bus.job.emit(job)
+        self.add(job)
+
+    def remove(self, job: DownloadJob):
+        if job is self.current:
+            job.cancel = "remove"                     # luồng tải dừng, xoá file tạm, báo "removed"
+            self.bus.job.emit(job)
+            return
+        self._take(job)
+        if job.state != "done":
+            remove_temps(job)
+        job.state, job.info = "removed", "Đã bỏ"
+        self.bus.job.emit(job)
 
     def stop_all(self):
         self.dl.stop_event.set()
-        while not self.q.empty():
-            try:
-                j = self.q.get_nowait()
-                j.state, j.info = "stopped", "Đã dừng"
-                self.bus.job.emit(j)
-            except queue.Empty:
-                break
+        with self.cv:
+            jobs, self.pending = self.pending, []
+        for j in jobs:
+            j.state, j.info = "stopped", "Đã dừng"
+            self.bus.job.emit(j)
 
     def run(self):
         while not self._quit:
+            with self.cv:
+                if not self.pending:
+                    self.cv.wait(0.3)
+                    continue
+                job = self.pending.pop(0)
+                if job.state != "queued":
+                    continue
+                self.current = job
             try:
-                job = self.q.get(timeout=0.3)
-            except queue.Empty:
-                continue
-            if job.state == "stopped":
-                continue
-            self.dl.stop_event.clear()
-            self.dl.run(job)
+                self.dl.stop_event.clear()
+                self.dl.run(job)
+            finally:
+                self.current = None
 
     def shutdown(self):
         self._quit = True
@@ -288,6 +358,14 @@ class SearchPage(QWidget):
         self.cb_quality.setCurrentText(st.get("quality", "Cao nhất có thể"))
         self.chk_tr.setChecked(st.get("translate_titles", True))
         self.chk_cover.setChecked(st.get("cover", False))
+        self.chk_subs.setChecked(st.get("subs", True))
+        login = (self.cfg.get("bili_login") or {}).get("cookies") or ""
+        if login:
+            try:
+                self.bili.set_login(json.loads(login))
+            except (ValueError, TypeError):
+                pass
+        self._refresh_account(check=bool(login))
         self.cb_cookie.setCurrentText(st.get("cookie", "Không dùng"))
         if st.get("site") in SITES:
             self.cb_site.setCurrentText(st["site"])
@@ -325,7 +403,9 @@ class SearchPage(QWidget):
         self.ed_link = QLineEdit()
         self.ed_link.setPlaceholderText("Dán link hoặc cả đoạn chữ chia sẻ: Bilibili, Douyin, Tây Qua, Weibo, Tiểu Hồng Thư, AcFun…")
         self.btn_link = _btn("⬇  Tải link này", "ghost")
+        self.btn_link_sub = _btn("📝 Lấy phụ đề", "ghost", "Lấy phụ đề có sẵn của link Bilibili (SRT, VTT, TXT, JSON)")
         r0 = QHBoxLayout(); r0.setSpacing(8); r0.addWidget(self.ed_link, 1); r0.addWidget(self.btn_link)
+        r0.addWidget(self.btn_link_sub)
         self.cb_bmode = QComboBox(); self.cb_bmode.addItems(BROWSE_MODES)
         self.cb_bmode.setToolTip("Thịnh hành: video hot toàn Bilibili hôm nay\n"
                                  "Bảng xếp hạng: top 100 trong 3 ngày của mục đã chọn\n"
@@ -371,8 +451,19 @@ class SearchPage(QWidget):
         sv.addLayout(_field("Lưu vào thư mục", orow))
         sv.addLayout(_field("Chất lượng", self.cb_quality,
                             "Không cần đăng nhập vẫn tải được tới 1080p (1080P+, 4K, 60fps chỉ dành cho VIP)"))
-        self.chk_cover = QCheckBox("Tải kèm ảnh bìa (.jpg)")
-        sv.addWidget(self.chk_cover)
+        self.chk_cover = QCheckBox("Ảnh bìa (.jpg)")
+        self.chk_cover.setToolTip("Tải kèm ảnh bìa của video")
+        self.chk_subs = QCheckBox("Phụ đề có sẵn (.srt)")
+        self.chk_subs.setToolTip("Lưu phụ đề Bilibili cạnh video thành “tên.zh.srt”: tab Dịch phụ đề dùng luôn, không phải nghe giọng.\n"
+                                 "Cần đăng nhập Bilibili.")
+        xrow = QHBoxLayout(); xrow.setSpacing(12)
+        lb_x = QLabel("Tải kèm:"); lb_x.setObjectName("hint")
+        xrow.addWidget(lb_x); xrow.addWidget(self.chk_cover); xrow.addWidget(self.chk_subs); xrow.addStretch(1)
+        sv.addLayout(xrow)
+        self.lb_acc = QLabel(""); self.lb_acc.setObjectName("hint")
+        self.btn_acc = _btn("🔑 Đăng nhập", "link")
+        arow = QHBoxLayout(); arow.setSpacing(6); arow.addWidget(self.lb_acc, 1); arow.addWidget(self.btn_acc)
+        sv.addLayout(arow)
         self.cb_cookie = QComboBox(); self.cb_cookie.addItems(["Không dùng", "Firefox", "Edge", "Chrome"])
         sv.addLayout(_field("Cookie trình duyệt (cho Douyin…)", self.cb_cookie,
                             "Chỉ cần khi trang báo đòi cookie. Không dùng cho Bilibili."))
@@ -401,6 +492,9 @@ class SearchPage(QWidget):
         self.ed_q.returnPressed.connect(lambda: self._search(1))
         self.btn_vi.clicked.connect(self._vi_to_zh)
         self.btn_link.clicked.connect(self._from_link)
+        self.btn_link_sub.clicked.connect(self._subs_from_link)
+        self.btn_acc.clicked.connect(self._account_clicked)
+        self.chk_subs.toggled.connect(lambda _=False: self._store())
         self.cb_site.currentTextChanged.connect(self._on_site)
         self.ed_link.returnPressed.connect(self._from_link)
         self.btn_prev.clicked.connect(lambda: self._goto(self.page - 1))
@@ -532,6 +626,7 @@ class SearchPage(QWidget):
         self.cards = [VideoCard(v) for v in res.videos]
         for c in self.cards:
             c.download.connect(self._ask_download)
+            c.subtitles.connect(self._ask_subtitles)
         self.lb_count.setText(self._source_label(res))
         if not self.cards:
             self._show_empty("Không tìm thấy video nào. Thử từ khóa khác." if self.source[:1] == ("search",)
@@ -700,7 +795,8 @@ class SearchPage(QWidget):
             name = f"{v.title} - P{p} {part.get('part', '')}".strip() if part and len(pages) > 1 else v.title
             out = self.ed_out.text().strip() or str(Path.home() / "Videos" / "Bilibili")
             self._enqueue(DownloadJob(f"{self.bili.web}/video/{bvid}?p={p}", name, out,
-                                      self.cb_quality.currentText(), cover=self.chk_cover.isChecked()))
+                                      self.cb_quality.currentText(), cover=self.chk_cover.isChecked(),
+                                      subs=self.chk_subs.isChecked()))
             self.lb_count.setText(f"Đã thêm vào hàng chờ: {name}")
             return
         self._ask_download(v)
@@ -730,11 +826,115 @@ class SearchPage(QWidget):
             out = os.path.join(out, safe or v.bvid)
         for p in parts:
             name = p.title if len(parts) > 1 else (v.title_vi or v.title)
-            self._enqueue(DownloadJob(p.url, name, out, self.cb_quality.currentText(), cover=self.chk_cover.isChecked()))
+            self._enqueue(DownloadJob(p.url, name, out, self.cb_quality.currentText(), cover=self.chk_cover.isChecked(),
+                                      subs=self.chk_subs.isChecked()))
         self._store()
+
+    # ------------------------------------------------------------ phụ đề & đăng nhập
+    def _subs_from_link(self):
+        text = self.ed_link.text().strip()
+        if not text:
+            self.lb_count.setText("Dán link Bilibili vào ô bên trái rồi bấm “Lấy phụ đề”.")
+            return
+        try:
+            url, site = extract(text)
+        except ValueError as e:
+            self.lb_count.setText(f"✖ {e}")
+            return
+        if site != "Bilibili":
+            self.lb_count.setText("✖ Chỉ lấy được phụ đề của Bilibili.")
+            return
+        self.btn_link_sub.setEnabled(False)
+        self.lb_count.setText("đang đọc link…")
+
+        def work(url=url):
+            bvid, p = self.bili.resolve(url)
+            title, parts = self.bili.parts(bvid)
+            return bvid, p, title, parts
+        self._sublink_job = _Job(work)
+        self._sublink_job.result.connect(self._on_sub_link)
+        self._sublink_job.start()
+
+    def _on_sub_link(self, res, err):
+        self.btn_link_sub.setEnabled(True)
+        if err:
+            self.lb_count.setText(f"✖ {err}")
+            return
+        self.lb_count.setText("")
+        bvid, p, title, parts = res
+        if p:   # link chỉ đúng phần ?p=N -> mở sẵn phần đó
+            parts = sorted(parts, key=lambda x: x.index != p)
+        self._open_subtitles(title, parts)
+
+    def _ask_subtitles(self, v: Video):
+        self.lb_count.setText("đang lấy danh sách tập…")
+        self._subparts_job = _Job(lambda: self.bili.parts(v.bvid))
+        self._subparts_job.result.connect(lambda res, err, v=v: self._on_sub_parts(v, res, err))
+        self._subparts_job.start()
+
+    def _on_sub_parts(self, v: Video, res, err):
+        self.lb_count.setText("")
+        title, parts = (v.title, [Part(v.url, v.title)]) if err else res
+        self._open_subtitles(v.title_vi or title, parts)
+
+    def _open_subtitles(self, title: str, parts: list):
+        out = self.ed_out.text().strip() or str(Path.home() / "Videos" / "Bilibili")
+        if len(parts) > 1:
+            safe = "".join(ch for ch in title if ch not in '\\/:*?"<>|').strip()[:80]
+            out = os.path.join(out, safe or "phu_de")
+        dlg = SubtitleDialog(self.bili, title, parts, out, self)
+        dlg.login_changed.connect(self._on_login)
+        dlg.exec()
+
+    def _account_clicked(self):
+        if self.bili.logged_in():
+            self.bili.logout()
+            self.cfg.pop("bili_login", None)
+            self.save_cfg()
+            self._refresh_account()
+            self.main_log("Đã đăng xuất Bilibili")
+            return
+        if LoginDialog(self.bili, self).exec() == QDialog.Accepted:
+            self._on_login()
+
+    def _on_login(self):
+        self.cfg["bili_login"] = {"cookies": json.dumps(self.bili.login_cookies())}
+        self.save_cfg()
+        self._refresh_account(check=True)
+
+    def _refresh_account(self, check: bool = False):
+        if not self.bili.logged_in():
+            self.lb_acc.setText("Bilibili: chưa đăng nhập")
+            self.lb_acc.setToolTip("Chưa đăng nhập: tải được tới 1080p nhưng không lấy được phụ đề.\n"
+                                   "Đăng nhập (quét mã QR bằng app Bilibili) để lấy phụ đề; tài khoản VIP tải được 1080P+, 4K.")
+            self.btn_acc.setText("🔑 Đăng nhập")
+            return
+        self.btn_acc.setText("Đăng xuất")
+        if not check:
+            return
+        self.lb_acc.setText("Bilibili: đang kiểm tra đăng nhập…")
+        self._acc_job = _Job(self.bili.account)
+        self._acc_job.result.connect(self._on_account)
+        self._acc_job.start()
+
+    def _on_account(self, acc, err):
+        if err:
+            self.lb_acc.setText("Bilibili: đã lưu đăng nhập (chưa kiểm tra được mạng)")
+            return
+        if not acc["login"]:
+            self.bili.logout()
+            self.cfg.pop("bili_login", None)
+            self.save_cfg()
+            self.lb_acc.setText("Bilibili: đăng nhập đã hết hạn, bấm Đăng nhập để quét mã lại")
+            self.btn_acc.setText("🔑 Đăng nhập")
+            return
+        self.lb_acc.setText(f"Bilibili: ✔ {acc['name']}" + (" · VIP" if acc["vip"] else ""))
 
     def _enqueue(self, job: DownloadJob):
         row = JobRow(job)
+        row.pause.connect(self.dthread.pause)
+        row.resume.connect(self.dthread.resume)
+        row.remove.connect(self.dthread.remove)
         self.rows[id(job)] = row
         self.q_empty.hide()
         self.q_lay.insertWidget(self.q_lay.count() - 1, row)
@@ -743,6 +943,13 @@ class SearchPage(QWidget):
 
     def _on_job(self, job: DownloadJob):
         row = self.rows.get(id(job))
+        if job.state == "removed":
+            if row:
+                row.setParent(None); row.deleteLater(); del self.rows[id(job)]
+            if not self.rows:
+                self.q_empty.show()
+            self._summary()
+            return
         if row:
             row.refresh()
         if job.state == "done":
@@ -756,19 +963,21 @@ class SearchPage(QWidget):
         if not jobs:
             self.lb_qsum.setText("")
             return
-        c = {s: sum(1 for j in jobs if j.state == s) for s in ("queued", "running", "done", "error", "stopped")}
+        c = {s: sum(1 for j in jobs if j.state == s) for s in ("queued", "running", "paused", "done", "error", "stopped")}
         parts = [f"{c['done']}/{len(jobs)} xong"]
         if c["running"]:
             parts.append("đang tải 1")
         if c["queued"]:
             parts.append(f"{c['queued']} đang chờ")
+        if c["paused"]:
+            parts.append(f"{c['paused']} tạm dừng")
         if c["error"]:
             parts.append(f"{c['error']} lỗi")
         self.lb_qsum.setText(" · ".join(parts))
 
     def _clear_done(self):
         for k, r in list(self.rows.items()):
-            if r.job.state in ("done", "error", "stopped"):
+            if r.job.state in ("done", "error", "stopped", "removed"):
                 r.setParent(None); r.deleteLater(); del self.rows[k]
         if not self.rows:
             self.q_empty.show()
@@ -796,6 +1005,7 @@ class SearchPage(QWidget):
     def _store(self):
         self.cfg["search"] = {"out_dir": self.ed_out.text().strip(), "quality": self.cb_quality.currentText(),
                               "translate_titles": self.chk_tr.isChecked(), "cover": self.chk_cover.isChecked(),
+                              "subs": self.chk_subs.isChecked(),
                               "site": self.cb_site.currentText(), "cookie": self.cb_cookie.currentText(),
                               "browse_mode": self.cb_bmode.currentText(), "browse_cat": self.cb_bcat.currentText(),
                               "auto_browse": self.cfg.get("search", {}).get("auto_browse", True)}

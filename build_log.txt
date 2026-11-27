@@ -1,0 +1,172 @@
+﻿python.exe : 286 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.10
+At line:1 char:531
++ ... TEXITCODE"; & $py -m PyInstaller --noconfirm --onefile --windowed --n ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (286 INFO: PyIns... hooks: 2026.10:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+286 INFO: Python: 3.12.8
+333 INFO: Platform: Windows-10-10.0.19045-SP0
+333 INFO: Python environment: C:\Users\MT\AppData\Local\Programs\Python\Python312
+334 INFO: wrote C:\Users\MT\Desktop\vs\vietsub_video\SubtitleTranslator.spec
+357 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\MT\\Desktop\\vs\\vietsub_video',
+ 'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\python312.zip',
+ 'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\DLLs',
+ 'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib',
+ 'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312',
+ 'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages',
+ 'C:\\Users\\MT\\Desktop\\vs\\vietsub_video']
+1273 INFO: Appending 'datas' from .spec
+1273 INFO: checking Analysis
+1273 INFO: Building Analysis because Analysis-00.toc is non existent
+1273 INFO: Looking for Python shared library...
+1276 INFO: Using Python shared library: C:\Users\MT\AppData\Local\Programs\Python\Python312\python312.dll
+1276 INFO: Running Analysis Analysis-00.toc
+1276 INFO: Target bytecode optimization level: 0
+1276 INFO: Initializing module dependency graph...
+1277 INFO: Initializing module graph hook caches...
+1303 INFO: Analyzing modules for base_library.zip ...
+2768 INFO: Processing standard module hook 'hook-encodings.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+3554 INFO: Processing standard module hook 'hook-math.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+4718 INFO: Processing standard module hook 'hook-pickle.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+7409 INFO: Processing standard module hook 'hook-heapq.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+7935 INFO: Caching module dependency graph...
+7988 INFO: Analyzing C:\Users\MT\Desktop\vs\vietsub_video\main.py
+8248 INFO: Processing standard module hook 'hook-PySide6.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+8484 INFO: Processing standard module hook 'hook-shiboken6.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+8693 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+11740 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+15333 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+31517 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+34653 INFO: Processing standard module hook 'hook-urllib3.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+34872 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\P
+ython\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+34872 INFO: SetuptoolsInfo: initializing cached setuptools info...
+35555 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 
+'setuptools._vendor.backports'!
+35555 INFO: Processing standard module hook 'hook-setuptools.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+35614 INFO: Processing standard module hook 'hook-platform.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+35614 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\P
+ython\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+35690 INFO: Processing standard module hook 'hook-sysconfig.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+35698 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\Pyth
+on\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+35699 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 
+'setuptools._vendor.jaraco'!
+35703 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\MT\\AppData\\Local\\Progra
+ms\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+35703 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 
+'setuptools._vendor.more_itertools'!
+35905 INFO: Processing standard module hook 'hook-_osx_support.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+35905 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\MT\\AppData\\Local\\Pro
+grams\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+35927 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\P
+ython\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+36203 INFO: Processing standard module hook 'hook-_ctypes.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+36450 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+36452 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\MT\\AppData\\Local\\P
+rograms\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+37382 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\Pytho
+n\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+37382 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 
+'setuptools._vendor.tomli'!
+38189 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs\\Pytho
+n\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+38189 INFO: Setuptools: 'wheel' appears to be a setuptools-vendored copy - creating alias to 
+'setuptools._vendor.wheel'!
+38746 INFO: Processing standard module hook 'hook-certifi.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+38821 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+39016 INFO: Processing standard module hook 'hook-cryptography.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+40241 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+40895 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+41009 INFO: Processing standard module hook 'hook-xml.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+42505 INFO: Processing standard module hook 'hook-imageio_ffmpeg.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+42706 INFO: Processing standard module hook 'hook-webbrowser.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+42797 INFO: Processing standard module hook 'hook-yt_dlp.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\yt_dlp\\__pyinstaller'
+172 WARNING: Failed to collect submodules for 'urllib3.contrib.emscripten' because importing 
+'urllib3.contrib.emscripten' raised: ModuleNotFoundError: No module named 'js'
+43707 WARNING: collect_data_files - skipping data collection for module 'curl_cffi' as it is not a package.
+43707 WARNING: collect_data_files - skipping data collection for module 'yt_dlp_ejs' as it is not a package.
+43980 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+44381 INFO: Processing standard module hook 'hook-sqlite3.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+54827 INFO: Processing module hooks (post-graph stage)...
+55476 INFO: Performing binary vs. data reclassification (137 entries)
+55523 INFO: Looking for ctypes DLLs
+55737 INFO: Analyzing run-time hooks ...
+55745 INFO: Including run-time hook 'pyi_rth_inspect.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+55745 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+55745 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+55745 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+55745 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+55745 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+55745 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\MT\\AppData\\Local\\Programs
+\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+55761 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 
+'C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PyInstaller\\hooks'
+55794 INFO: Creating base_library.zip...
+55822 INFO: Looking for dynamic libraries
+56976 INFO: Extra DLL search directories (AddDllDirectory): 
+['C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\shiboken6']
+56976 INFO: Extra DLL search directories (PATH): 
+['C:\\Users\\MT\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\PySide6']
+59298 INFO: Warnings written to 
+C:\Users\MT\Desktop\vs\vietsub_video\build\SubtitleTranslator\warn-SubtitleTranslator.txt
+59534 INFO: Graph cross-reference written to 
+C:\Users\MT\Desktop\vs\vietsub_video\build\SubtitleTranslator\xref-SubtitleTranslator.html
+59607 INFO: checking PYZ
+59608 INFO: Building PYZ because PYZ-00.toc is non existent
+59608 INFO: Building PYZ (ZlibArchive) C:\Users\MT\Desktop\vs\vietsub_video\build\SubtitleTranslator\PYZ-00.pyz
+62731 INFO: Building PYZ (ZlibArchive) C:\Users\MT\Desktop\vs\vietsub_video\build\SubtitleTranslator\PYZ-00.pyz 
+completed successfully.
+62799 INFO: checking PKG
+62799 INFO: Building PKG because PKG-00.toc is non existent
+62799 INFO: Building PKG (CArchive) SubtitleTranslator.pkg
+99056 INFO: Building PKG (CArchive) SubtitleTranslator.pkg completed successfully.
+99063 INFO: Bootloader C:\Users\MT\AppData\Local\Programs\Python\Python312\Lib\site-packages\PyInstaller\bootloader\Win
+dows-64bit-intel\runw.exe
+99063 INFO: checking EXE
+99063 INFO: Building EXE because EXE-00.toc is non existent
+99063 INFO: Building EXE from EXE-00.toc
+99063 INFO: Copying bootloader EXE to C:\Users\MT\Desktop\vs\vietsub_video\dist\SubtitleTranslator.exe
+99068 INFO: Copying icon to EXE
+99069 INFO: Copying 0 resources to EXE
+99069 INFO: Embedding manifest in EXE
+99077 INFO: Appending PKG archive to EXE
+99179 INFO: Fixing EXE headers
+103814 INFO: Building EXE from EXE-00.toc completed successfully.
+103822 INFO: Build complete! The results are available in: C:\Users\MT\Desktop\vs\vietsub_video\dist
+Adding imports: ['yt_dlp.compat._legacy', 'yt_dlp.compat._deprecated', 'yt_dlp.utils._legacy', 'yt_dlp.utils._deprecated', 'Cryptodome', 'requests', 'requests.__version__', 'requests._internal_utils', 'requests._types', 'requests.adapters', 'requests.api', 'requests.auth', 'requests.certs', 'requests.compat', 'requests.cookies', 'requests.exceptions', 'requests.help', 'requests.hooks', 'requests.models', 'requests.packages', 'requests.sessions', 'requests.status_codes', 'requests.structures', 'requests.utils', 'urllib3', 'urllib3._base_connection', 'urllib3._collections', 'urllib3._request_methods', 'urllib3._version', 'urllib3.connection', 'urllib3.connectionpool', 'urllib3.contrib', 'urllib3.contrib.pyopenssl', 'urllib3.contrib.socks', 'urllib3.exceptions', 'urllib3.fields', 'urllib3.filepost', 'urllib3.http2', 'urllib3.http2.connection', 'urllib3.http2.probe', 'urllib3.poolmanager', 'urllib3.response', 'urllib3.util', 'urllib3.util.connection', 'urllib3.util.proxy', 'urllib3.util.request', 'urllib3.util.response', 'urllib3.util.retry', 'urllib3.util.ssl_', 'urllib3.util.ssl_match_hostname', 'urllib3.util.ssltransport', 'urllib3.util.timeout', 'urllib3.util.url', 'urllib3.util.util', 'urllib3.util.wait', 'mutagen', 'brotli', 'certifi', 'secretstorage', 'curl_cffi']

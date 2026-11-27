@@ -21,6 +21,9 @@ import requests
 
 API = "https://api.bilibili.com"
 WEB = "https://www.bilibili.com"
+PASSPORT = "https://passport.bilibili.com"
+# cookie đăng nhập cần giữ lại (SESSDATA là chính; bili_jct dùng cho thao tác ghi, app không cần)
+LOGIN_COOKIES = ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "sid")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/131.0.0.0 Safari/537.36")
 
@@ -97,6 +100,54 @@ class SearchResult:
     note: str = ""        # ghi chú cho người dùng (vd. mục không có bảng xếp hạng nên hiện Đề xuất)
 
 
+@dataclass
+class SubTrack:
+    lan: str              # "zh-CN", "ai-zh", "en-US"…
+    name: str             # "中文（中国）"
+    url: str
+    ai: bool = False      # phụ đề do Bilibili tự tạo bằng AI
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.lan})" + (" · Tự động (AI)" if self.ai else " · Do người đăng làm")
+
+    @property
+    def code(self) -> str:
+        """Mã ngôn ngữ ngắn cho tên file: ai-zh / zh-CN / zh-Hans -> zh."""
+        lan = self.lan[3:] if self.lan.startswith("ai-") else self.lan
+        return (lan.split("-")[0] or "sub").lower()
+
+
+def _ts(sec, sep: str = ",") -> str:
+    ms = max(0, int(round(float(sec) * 1000)))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
+
+
+def subs_to_srt(body: list[dict]) -> str:
+    return "\n".join(f"{i}\n{_ts(c.get('from', 0))} --> {_ts(c.get('to', 0))}\n{(c.get('content') or '').strip()}\n"
+                     for i, c in enumerate(body, 1))
+
+
+def subs_to_vtt(body: list[dict]) -> str:
+    return "WEBVTT\n\n" + "\n".join(
+        f"{_ts(c.get('from', 0), '.')} --> {_ts(c.get('to', 0), '.')}\n{(c.get('content') or '').strip()}\n" for c in body)
+
+
+def subs_to_txt(body: list[dict]) -> str:
+    return "\n".join((c.get("content") or "").strip() for c in body) + "\n"
+
+
+def best_tracks(tracks: list[SubTrack]) -> dict[str, SubTrack]:
+    """Mỗi ngôn ngữ một bản: ưu tiên bản người đăng làm hơn bản AI."""
+    out: dict[str, SubTrack] = {}
+    for t in sorted(tracks, key=lambda t: t.ai):
+        out.setdefault(t.code, t)
+    return out
+
+
 def fmt_duration(sec) -> str:
     try:
         sec = int(sec)
@@ -144,8 +195,8 @@ def fmt_count(n: int) -> str:
 class Bili:
     """Phiên làm việc với Bilibili (giữ cookie, khóa WBI)."""
 
-    def __init__(self, api: str = API, web: str = WEB):
-        self.api, self.web = api.rstrip("/"), web.rstrip("/")
+    def __init__(self, api: str = API, web: str = WEB, passport: str = PASSPORT):
+        self.api, self.web, self.passport = api.rstrip("/"), web.rstrip("/"), passport.rstrip("/")
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": UA, "Referer": self.web + "/", "Origin": self.web})
         self._wbi: tuple[str, float] | None = None
@@ -381,6 +432,114 @@ class Bili:
         return {"video": urls(v), "audio": urls(a) if a else [], "height": best_h,
                 "codec": str(v.get("codecs", "")), "duration": int(dash.get("duration") or 0)}
 
+    def cid_for(self, url: str) -> tuple[str, int, int, int]:
+        """Link video (có thể có ?p=N) -> (bvid, cid, p, số phần)."""
+        bvid = re.search(r"BV[0-9A-Za-z]{10}", url).group(0)
+        mp = re.search(r"[?&]p=(\d+)", url)
+        p = int(mp.group(1)) if mp else 1
+        meta = self.video_meta(bvid)
+        pages = meta.get("pages") or []
+        page = next((x for x in pages if x.get("page") == p), pages[0] if pages else None)
+        cid = (page or {}).get("cid") or meta.get("cid")
+        if not cid:
+            raise BiliError("Không tìm thấy cid của video")
+        return bvid, int(cid), p, len(pages)
+
+    # ---------------------------------------------------------- đăng nhập (quét mã QR bằng app Bilibili)
+    def logged_in(self) -> bool:
+        return bool(self.s.cookies.get("SESSDATA"))
+
+    def login_cookies(self) -> dict:
+        return {c.name: c.value for c in self.s.cookies if c.name in LOGIN_COOKIES}
+
+    def _cookie_domain(self) -> str:
+        host = urllib.parse.urlparse(self.web).hostname or "bilibili.com"
+        return ".bilibili.com" if host.endswith("bilibili.com") else host   # host khác: máy chủ giả lập khi kiểm thử
+
+    def set_login(self, cookies: dict):
+        for k, v in (cookies or {}).items():
+            if k in LOGIN_COOKIES and v:
+                self.s.cookies.set(k, v, domain=self._cookie_domain())
+        self._wbi = None
+
+    def logout(self):
+        for c in list(self.s.cookies):
+            if c.name in LOGIN_COOKIES:
+                self.s.cookies.clear(c.domain, c.path, c.name)
+        self._wbi = None
+
+    def account(self) -> dict:
+        """{'login': bool, 'name': str, 'vip': bool}"""
+        d = self._get("/x/web-interface/nav", {}).get("data") or {}
+        return {"login": bool(d.get("isLogin")), "name": d.get("uname") or "",
+                "vip": bool(d.get("vipStatus"))}
+
+    def qr_start(self) -> tuple[str, str]:
+        """(nội dung mã QR, qrcode_key)"""
+        try:
+            d = self.s.get(self.passport + "/x/passport-login/web/qrcode/generate", timeout=15).json()
+        except (requests.RequestException, ValueError) as e:
+            raise BiliError(f"Không lấy được mã QR đăng nhập: {e}") from e
+        if d.get("code") != 0:
+            raise BiliError(f"Không lấy được mã QR (mã {d.get('code')}: {d.get('message')})")
+        return d["data"]["url"], d["data"]["qrcode_key"]
+
+    def qr_poll(self, key: str) -> str:
+        """'wait' | 'scanned' (đã quét, chờ bấm xác nhận) | 'expired' | 'ok' (cookie đã vào phiên)."""
+        try:
+            d = self.s.get(self.passport + "/x/passport-login/web/qrcode/poll",
+                           params={"qrcode_key": key}, timeout=15).json()
+        except (requests.RequestException, ValueError):
+            return "wait"
+        code = (d.get("data") or {}).get("code", d.get("code"))
+        if code == 0:
+            # cookie thường được đặt qua Set-Cookie; một số trường hợp chỉ có trong data.url
+            url = (d.get("data") or {}).get("url") or ""
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            self.set_login({k: v[0] for k, v in q.items() if k in LOGIN_COOKIES})
+            for c in list(self.s.cookies):          # chuyển cookie của passport sang toàn miền
+                if c.name in LOGIN_COOKIES and c.domain != self._cookie_domain():
+                    self.s.cookies.clear(c.domain, c.path, c.name)
+                    self.s.cookies.set(c.name, c.value, domain=self._cookie_domain())
+            self._wbi = None
+            return "ok" if self.logged_in() else "wait"
+        return {86090: "scanned", 86038: "expired"}.get(code, "wait")
+
+    # ---------------------------------------------------------- phụ đề có sẵn (CC / AI)
+    def subtitles(self, bvid: str, cid: int) -> list[SubTrack]:
+        data = self._get("/x/player/wbi/v2", self._sign({"bvid": bvid, "cid": cid}))
+        if data.get("code") != 0:
+            data = self._get("/x/player/v2", {"bvid": bvid, "cid": cid})
+        if data.get("code") != 0:
+            raise BiliError(f"Không lấy được phụ đề (mã {data.get('code')}: {data.get('message')})")
+        d = data.get("data") or {}
+        tracks = []
+        for s in (d.get("subtitle") or {}).get("subtitles") or []:
+            u = s.get("subtitle_url") or ""
+            if not u:
+                continue
+            if u.startswith("//"):
+                u = "https:" + u
+            elif u.startswith("http://"):
+                u = "https://" + u[7:]
+            lan = s.get("lan") or "sub"
+            tracks.append(SubTrack(lan, s.get("lan_doc") or lan, u, ai=s.get("type") == 1 or lan.startswith("ai-")))
+        if not tracks and not self.logged_in() and d.get("need_login_subtitle", True):
+            raise BiliError("Bilibili chỉ đưa phụ đề cho tài khoản đã đăng nhập. "
+                            "Bấm “Đăng nhập Bilibili” (quét mã QR bằng app Bilibili) rồi thử lại.")
+        return tracks
+
+    def subtitle_body(self, track: SubTrack) -> list[dict]:
+        """Danh sách câu [{'from': giây, 'to': giây, 'content': chữ}, …]"""
+        try:
+            r = self.s.get(track.url, timeout=20)
+            body = r.json().get("body")
+        except (requests.RequestException, ValueError) as e:
+            raise BiliError(f"Không tải được phụ đề: {e}") from e
+        if not isinstance(body, list):
+            raise BiliError("File phụ đề của Bilibili không đúng định dạng")
+        return body
+
     def image(self, url: str) -> bytes:
         """Ảnh bìa (bản thu nhỏ của máy chủ ảnh Bilibili cho nhẹ)."""
         if "hdslb.com" in url and "@" not in url:
@@ -414,11 +573,14 @@ class DownloadJob:
     cover: bool = False            # tải kèm ảnh bìa
     auto_title: bool = False       # chưa biết tên -> lấy tiêu đề gốc từ trang (trang ngoài Bilibili)
     cookies_browser: str = ""      # "firefox" | "edge" | "chrome" | "" (Douyin hay cần)
-    state: str = "queued"          # queued | running | done | error | stopped
+    subs: bool = False             # tải kèm phụ đề có sẵn của Bilibili (.zh.srt…)
+    state: str = "queued"          # queued | running | paused | done | error | stopped | removed
     pct: float = 0.0
     info: str = ""
     file: str = ""
+    cancel: str = ""               # "pause" | "remove": yêu cầu dừng riêng job này
     _phase: dict = field(default_factory=dict)
+    temps: list = field(default_factory=list)   # file tạm (.part) để xoá khi bỏ job
 
 
 class _Stopped(Exception):
@@ -427,6 +589,18 @@ class _Stopped(Exception):
 
 def _safe_name(t: str) -> str:
     return re.sub(r'[\\/:*?"<>|\r\n\t]', " ", t).strip()[:90]
+
+
+def remove_temps(job: DownloadJob):
+    """Xoá phần đã tải dở của job (khi người dùng bỏ hẳn job)."""
+    for t in job.temps:
+        for x in (t, t + ".ytdl"):
+            try:
+                if os.path.exists(x):
+                    os.remove(x)
+            except OSError:
+                pass
+    job.temps = []
 
 
 class Downloader:
@@ -439,7 +613,25 @@ class Downloader:
         self.bili = bili
 
     # ------------------------------------------------------------ chung
+    def _halt(self, job: DownloadJob) -> bool:
+        return self.stop_event.is_set() or bool(job.cancel)
+
+    def _stopped(self, job: DownloadJob):
+        """Ghi trạng thái sau khi job bị dừng giữa chừng."""
+        if job.cancel == "remove":
+            job.state, job.info = "removed", "Đã bỏ"
+            remove_temps(job)
+        elif job.cancel == "pause":
+            job.state, job.info = "paused", "Đã tạm dừng · bấm ▶ Tiếp tục để tải tiếp từ chỗ dừng"
+        else:
+            job.state, job.info = "stopped", "Đã dừng"
+        job.cancel = ""
+
     def run(self, job: DownloadJob):
+        if job.cancel:
+            self._stopped(job)
+            self.on_update(job)
+            return
         os.makedirs(job.out_dir, exist_ok=True)
         job.state, job.info, job.pct, job._phase = "running", "Đang lấy thông tin…", 0.0, {}
         self.on_update(job)
@@ -450,10 +642,14 @@ class Downloader:
                 self.on_update(job)
                 return
             except _Stopped:
-                job.state, job.info = "stopped", "Đã dừng"
+                self._stopped(job)
                 self.on_update(job)
                 return
             except Exception as e:  # noqa: BLE001
+                if self._halt(job):
+                    self._stopped(job)
+                    self.on_update(job)
+                    return
                 errs.append(f"API: {e}")
                 self.log(f"  ⚠ Tải qua API lỗi ({job.title}): {e} → thử yt-dlp")
                 job.info, job.pct, job._phase = "Thử cách khác (yt-dlp)…", 0.0, {}
@@ -475,7 +671,7 @@ class Downloader:
         last = None
         for attempt in range(3):
             for u in urls:
-                if self.stop_event.is_set():
+                if self._halt(job):
                     raise _Stopped()
                 try:
                     have = os.path.getsize(dst) if os.path.exists(dst) else 0
@@ -492,7 +688,7 @@ class Downloader:
                         done, t0, last_ui = have, time.monotonic(), 0.0
                         with open(dst, mode) as f:
                             for chunk in r.iter_content(1 << 18):
-                                if self.stop_event.is_set():
+                                if self._halt(job):
                                     raise _Stopped()
                                 f.write(chunk)
                                 done += len(chunk)
@@ -508,7 +704,10 @@ class Downloader:
                     raise
                 except Exception as e:  # noqa: BLE001
                     last = e
-            time.sleep(1.5 * (attempt + 1))
+            for _ in range(int(15 * (attempt + 1))):     # chờ 1.5 s, 3 s… nhưng vẫn nghe lệnh dừng
+                if self._halt(job):
+                    raise _Stopped()
+                time.sleep(0.1)
         raise BiliError(f"Không tải được luồng {key}: {last}")
 
     def _progress(self, job, key, speed):
@@ -523,25 +722,35 @@ class Downloader:
             (f" · còn {int(eta) // 60}:{int(eta) % 60:02d}" if eta else "")
         self.on_update(job)
 
+    def _save_subs(self, job: DownloadJob, bvid: str, cid: int, base: str) -> str:
+        """Lưu phụ đề có sẵn cạnh video: tên_video.zh.srt (tab Dịch phụ đề dùng luôn, không phải nghe lại).
+        Trả về ghi chú ngắn cho dòng trạng thái; lỗi phụ đề không làm hỏng việc tải video."""
+        try:
+            tracks = best_tracks(self.bili.subtitles(bvid, cid))
+            if not tracks:
+                return " · video không có phụ đề"
+            for code, t in tracks.items():
+                with open(f"{base}.{code}.srt", "w", encoding="utf-8") as f:
+                    f.write(subs_to_srt(self.bili.subtitle_body(t)))
+            return " · phụ đề: " + ", ".join(f"{c}{' (AI)' if t.ai else ''}" for c, t in tracks.items())
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  ⚠ Không lấy được phụ đề ({job.title}): {e}")
+            return " · không lấy được phụ đề" + (" (cần đăng nhập)" if not self.bili.logged_in() else "")
+
     def _run_native(self, job: DownloadJob):
-        bvid = re.search(r"BV[0-9A-Za-z]{10}", job.url).group(0)
-        mp = re.search(r"[?&]p=(\d+)", job.url)
-        p = int(mp.group(1)) if mp else 1
+        bvid, cid, p, n_pages = self.bili.cid_for(job.url)
         meta = self.bili.video_meta(bvid)
-        pages = meta.get("pages") or []
-        page = next((x for x in pages if x.get("page") == p), pages[0] if pages else None)
-        cid = (page or {}).get("cid") or meta.get("cid")
-        if not cid:
-            raise BiliError("Không tìm thấy cid của video")
         audio_only = job.quality.startswith("Chỉ âm thanh")
         st = self.bili.streams(bvid, cid, MAX_H.get(job.quality, 4320))
-        base = os.path.join(job.out_dir, f"{_safe_name(job.title) or bvid} [{bvid}" + (f"_p{p}" if len(pages) > 1 else "") + "]")
+        base = os.path.join(job.out_dir, f"{_safe_name(job.title) or bvid} [{bvid}" + (f"_p{p}" if n_pages > 1 else "") + "]")
         out = base + (".m4a" if audio_only else ".mp4")
         if os.path.exists(out) and os.path.getsize(out) > 0:
-            job.file, job.state, job.pct, job.info = out, "done", 100.0, f"Đã có sẵn · {os.path.basename(out)}"
+            note = self._save_subs(job, bvid, cid, base) if job.subs else ""
+            job.file, job.state, job.pct, job.info = out, "done", 100.0, f"Đã có sẵn · {os.path.basename(out)}{note}"
             return
         sess = self._http()
         tmp_v, tmp_a = base + ".video.part", base + ".audio.part"
+        job.temps = [tmp_v, tmp_a]
         if "single" in st:
             self._fetch(sess, st["single"], tmp_v, job, "file")
             os.replace(tmp_v, out)
@@ -562,8 +771,14 @@ class Downloader:
                     f.write(sess.get(meta["pic"], timeout=20).content)
             except Exception:  # noqa: BLE001
                 pass
-        job.file, job.state, job.pct = out, "done", 100.0
-        job.info = f"Xong · {os.path.basename(out)}" + (f" · {st['height']}p" if st.get("height") and not audio_only else "")
+        note = ""
+        if job.subs:
+            job.info = "Đang lấy phụ đề…"
+            self.on_update(job)
+            note = self._save_subs(job, bvid, cid, base)
+        job.file, job.state, job.pct, job.temps = out, "done", 100.0, []
+        job.info = f"Xong · {os.path.basename(out)}" + \
+            (f" · {st['height']}p" if st.get("height") and not audio_only else "") + note
 
     def _merge(self, video: str | None, audio: str | None, out: str):
         import subprocess
@@ -608,10 +823,13 @@ class Downloader:
                 job.url = full
 
         def hook(d):
-            if self.stop_event.is_set():
+            if self._halt(job):
                 raise yt_dlp.utils.DownloadCancelled("Đã dừng")
             st = d.get("status")
             fn = d.get("filename", "")
+            tmp = d.get("tmpfilename") or (fn + ".part" if fn else "")
+            if tmp and tmp not in job.temps:
+                job.temps.append(tmp)
             if job.auto_title and (d.get("info_dict") or {}).get("title"):
                 job.title, job.auto_title = d["info_dict"]["title"][:120], False
             if st == "downloading":
@@ -681,12 +899,12 @@ class Downloader:
                 for r in (info or {}).get("requested_downloads") or []:
                     path = r.get("filepath") or path
                 job.file = path or ydl.prepare_filename(info)
-            job.state, job.pct = "done", 100.0
+            job.state, job.pct, job.temps = "done", 100.0, []
             h = (info or {}).get("height")
             job.info = f"Xong · {os.path.basename(job.file)}" + (f" · {h}p" if h else "")
         except Exception as e:  # noqa: BLE001
-            if self.stop_event.is_set():
-                job.state, job.info = "stopped", "Đã dừng"
+            if self._halt(job):
+                self._stopped(job)
             else:
                 msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
                 if re.search(r"cookie", msg, re.I) and not job.cookies_browser:
